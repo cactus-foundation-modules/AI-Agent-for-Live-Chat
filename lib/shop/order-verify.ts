@@ -1,0 +1,92 @@
+import { companiesMatch, emailsMatch, normaliseCompany, normalisePostcode, orderNumbersMatch, postcodesMatch, spokenPostcodeToText } from './text'
+
+// Copied from the phone assistant (modules/ai-call-answering/lib/order-verify.ts) and
+// kept in step by hand: the two modules never import each other. Adapted for
+// a chat window where the words the model reads differ.
+//
+// Proving who is calling before anything about an order is said.
+//
+// The rule, in one place: the delivery postcode is ALWAYS required, together
+// with at least one of order number, email or company name, and every detail
+// the caller does give must match, allowing for a slip of the ear (order
+// DW000123 said as "123", a postcode, email or company one character out). A caller who knows an order number but not
+// the postcode gets nothing, because order numbers are printed on parcels and
+// emails that get forwarded and photographed; a postcode alone is a guess. It
+// takes both.
+
+export type OrderClaim = {
+  postcode: string
+  orderNumber: string | null
+  email: string | null
+  companyName: string | null
+}
+
+/** The parts of an order that can be checked against a claim. */
+export type OrderIdentity = {
+  orderNumber: string
+  customerEmail: string
+  customerOrganisation: string | null
+  shippingPostcode: string | null
+  shippingCompany: string | null
+}
+
+/** Whether a claim carries enough to be worth checking at all. */
+export function isCheckableClaim(claim: OrderClaim): boolean {
+  if (normalisePostcode(spokenPostcodeToText(claim.postcode)).length < 5) return false
+  return !!(claim.orderNumber?.trim() || claim.email?.trim() || claim.companyName?.trim())
+}
+
+export function claimMatchesOrder(claim: OrderClaim, order: OrderIdentity): boolean {
+  if (!isCheckableClaim(claim)) return false
+  if (!order.shippingPostcode) return false
+  if (!postcodesMatch(claim.postcode, order.shippingPostcode)) return false
+
+  if (claim.orderNumber?.trim()) {
+    if (!orderNumbersMatch(claim.orderNumber, order.orderNumber)) return false
+  }
+  if (claim.email?.trim()) {
+    if (!emailsMatch(claim.email, order.customerEmail)) return false
+  }
+  if (claim.companyName?.trim()) {
+    const spoken = normaliseCompany(claim.companyName)
+    if (spoken === '') return false
+    const held = [order.customerOrganisation, order.shippingCompany]
+      .filter((name): name is string => !!name)
+      .map(normaliseCompany)
+    if (!held.some((name) => companiesMatch(spoken, name))) return false
+  }
+  return true
+}
+
+/** Plain words for where an order stands. */
+export function orderStatusWords(status: string, paymentStatus: string): string {
+  switch (status) {
+    case 'PENDING':
+      return paymentStatus === 'PAID' ? 'received and being confirmed' : 'received, waiting for payment to clear'
+    case 'PROCESSING':
+      return 'being processed'
+    case 'PREPARING':
+      return 'being prepared for dispatch'
+    case 'SHIPPED':
+      return 'dispatched'
+    case 'COMPLETED':
+      return 'completed'
+    case 'CANCELLED':
+      return 'cancelled'
+    case 'REFUNDED':
+      return 'refunded'
+    case 'PARTIALLY_REFUNDED':
+      return 'partly refunded'
+    case 'ON_HOLD':
+      return 'on hold'
+    default:
+      return status.toLowerCase().replace(/_/g, ' ')
+  }
+}
+
+/** A courier's stage code in words a caller can be told. Unknown codes are
+ *  passed through readable rather than hidden. */
+export function trackingStageWords(stage: string | null): string | null {
+  if (!stage) return null
+  return stage.toLowerCase().replace(/[_-]+/g, ' ').trim() || null
+}

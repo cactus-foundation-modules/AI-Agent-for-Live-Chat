@@ -1,0 +1,97 @@
+{
+  "name": "ai-agent-for-live-chat",
+  "version": "0.1.0",
+  "tablePrefix": "aichat_",
+  "notificationKinds": [
+    {"id": "callback", "label": "Callback requests from the chat assistant", "description": "The chat assistant could not help a visitor and took their name and email so somebody can get back to them.", "dedupePrefix": "ai-agent-for-live-chat:callback:"},
+    {"id": "unanswered", "label": "Weekly list of questions the chat assistant could not answer", "description": "Each Monday, how many visitor questions the chat assistant had no answer for: the FAQs, pages or details worth adding next.", "dedupePrefix": "ai-agent-for-live-chat:unanswered:"}
+  ],
+  "description": "AI Agent for Live Chat - a digital assistant that answers your Live Chat. It answers questions about your products, checks orders once the visitor has proved who they are, reads the pictures they send, raises returns and damage reports, hands a chat to a colleague when it should and takes a name and email for anything it cannot help with.",
+  "requiresCoreVersion": "0.5.1908",
+  "requiresModules": [
+    {"name": "chat", "minVersion": "0.1.28"},
+    {"name": "shop", "minVersion": "0.1.542"},
+    {"name": "unified-inbox", "minVersion": "0.1.152"}
+  ],
+  "permissions": [
+    "ai-agent-for-live-chat.manage"
+  ],
+  "requiredEnvVars": [
+    {
+      "name": "ENCRYPTION_KEY",
+      "required": true
+    },
+    {
+      "name": "OPENAI_API_KEY",
+      "required": false
+    },
+    {
+      "name": "CRON_SECRET",
+      "required": false
+    }
+  ],
+  "cronJobs": [
+    {
+      "path": "/api/m/ai-agent-for-live-chat/cron/handover",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/m/ai-agent-for-live-chat/cron/unanswered",
+      "schedule": "0 7 * * 1"
+    }
+  ],
+  "cookieCategories": [],
+  "settingsTabs": [
+    {
+      "id": "ai-agent-for-live-chat",
+      "label": "AI Agent for Live Chat",
+      "permission": "ai-agent-for-live-chat.manage",
+      "import": "./components/admin/SettingsTab",
+      "component": "AiAgentForLiveChatSettingsTab"
+    }
+  ],
+  "extensionPoints": [
+    {
+      "point": "chat.responder",
+      "id": "ai-agent-for-live-chat",
+      "serverOnly": true,
+      "import": "./lib/responder",
+      "component": "aiChatResponder"
+    },
+    {
+      "point": "chat.admin-toolbar",
+      "id": "ai-agent-for-live-chat-first",
+      "import": "./components/chat/AiFirstSwitch",
+      "component": "AiFirstSwitch"
+    },
+    {
+      "point": "chat.conversation-actions",
+      "id": "ai-agent-for-live-chat-controls",
+      "import": "./components/chat/ConversationControls",
+      "component": "ConversationControls"
+    },
+    {
+      "point": "chat.product-actions",
+      "id": "ai-agent-for-live-chat-basket",
+      "import": "./components/chat/ProductButtons",
+      "component": "ProductButtons"
+    }
+  ],
+  "emailTemplates": {
+    "groupLabel": "Chat assistant",
+    "import": "./lib/email-templates",
+    "export": "aiAgentForLiveChatEmailTemplates"
+  },
+  "teardown": [
+    "aichat_rate_events",
+    "aichat_callbacks",
+    "aichat_unanswered",
+    "aichat_conversations",
+    "aichat_settings"
+  ],
+  "memberExtensions": {
+    "activityTypes": [],
+    "notificationCategories": [],
+    "routeTiers": []
+  }
+}
