@@ -111,4 +111,9 @@ describe('pickVariations', () => {
     expect(pickVariations('pastel blue', rows).fits).toEqual([0])
     expect(pickVariations('blue', rows).fits).toEqual([0, 1])
   })
+
+  it('binds a colour backwards only when nothing follows it ("black frame black top")', () => {
+    expect(picked('120cm no mod panel black frame black top').values).toEqual(['120cm / Without Modesty Panel / Black / Black'])
+    expect(picked('120 without modesty panel frame black').fits).toHaveLength(2)
+  })
 })

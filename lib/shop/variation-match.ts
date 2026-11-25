@@ -219,7 +219,12 @@ function pickWith(wanted: string, rows: readonly VariationCandidate[]): Variatio
       if (!nameOwners.has(word) && !VARIATION_FILLER.has(word)) ignored.push(word)
       continue
     }
-    const option = ownerOf(words[index + 1]) ?? ownerOf(words[index - 1])
+    // "black frame" binds forwards; "frame black" backwards, but only when
+    // nothing that means something follows ("black frame black top": the
+    // second black is the top's, not the frame's).
+    const next = words[index + 1]
+    const nextMeans = next !== undefined && !GLUE.has(next) && !VARIATION_FILLER.has(next)
+    const option = ownerOf(next) ?? (nextMeans ? null : ownerOf(words[index - 1]))
     const boundHere = option !== null && slotRows.some((slots) => slots.some((slot) => slot.option === option && slot.words.some((w) => wordFits(w, variants))))
     needs.push({ kind: 'word', word, variants, option: boundHere ? option : null })
   }
