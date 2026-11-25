@@ -5,8 +5,8 @@ import { orderUrlVars } from '@/modules/shop/lib/email'
 import { orderTrackingUrl } from '@/modules/shop/lib/order-tracking'
 import { renderProductTable } from '@/modules/unified-inbox/lib/products/render'
 import { resolveProducts, type ProductChoice, type ProductRef } from '@/modules/unified-inbox/lib/products'
-import { isPlausibleEmail, visitorWroteEmail } from './contact-text'
-import { chosenDeliveries, productsToSend, type DiscussedProduct } from './discussed-products'
+import { greetingName, isPlausibleEmail, visitorWroteEmail } from './contact-text'
+import { chosenDeliveries, chosenPicks, productsToSend, type DiscussedProduct } from './discussed-products'
 import { titleCaseName } from './name-case'
 import { pickVerifiedOrder } from './order-checks'
 import { MAX_EMAILS_PER_CHAT, MAX_EMAILS_PER_VISITOR_PER_HOUR, recentRateEvents, recordEmailSent, visitorKey } from './order-state'
@@ -193,9 +193,13 @@ export function cleanSubject(raw: string | undefined): string {
  *  Pure. */
 export function withChosenDeliveries(refs: readonly ProductRef[], recorded: readonly DiscussedProduct[]): ProductRef[] {
   const chosen = chosenDeliveries(recorded)
+  // A listing the visitor chose only some options of goes with just those
+  // picked, so the email's link opens with their choices and nothing more.
+  const picks = chosenPicks(recorded)
   return refs.map((ref) => {
     const delivery = chosen.get(ref.id)
-    return delivery ? { ...ref, delivery: delivery.key } : ref
+    const picked = ref.kind === 'product' ? picks.get(ref.id) : undefined
+    return { ...ref, ...(delivery ? { delivery: delivery.key } : {}), ...(picked ? { picks: picked } : {}) }
   })
 }
 
@@ -254,7 +258,7 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
     resolved = await listFor([])
   }
   const listing = renderProductTable(resolved.map((entry) => linkWithDelivery(entry.choice)))
-  const name = args.name?.trim() || ctx.visitorName?.trim() || (recipient.source === 'order' ? namedContact?.name : '') || ''
+  const name = greetingName(args.name, ctx.visitorText, ctx.visitorName) || (recipient.source === 'order' ? namedContact?.name : '') || ''
 
   const sent = await sendTemplateEmail(recipient.email, 'ai-agent-for-live-chat.chat-summary', {
     customerName: titleCaseName(name) || 'there',

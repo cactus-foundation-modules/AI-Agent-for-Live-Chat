@@ -6,7 +6,7 @@ const out = { ...inStock, stockCount: 0 }
 const madeToOrder = { ...out, outOfStockBehaviour: 'ALLOW' }
 
 function variation(id: string, colour: string, price: number, facts = inStock, family: string[] = []): SearchVariation {
-  return { id, optionValues: [colour], labels: [colour, ...family], price, facts }
+  return { id, optionNames: ['Colour'], optionValues: [colour], labels: [colour, ...family], price, facts }
 }
 
 describe('canBuy', () => {
@@ -56,5 +56,14 @@ describe('pickForSearch', () => {
     const rows = [variation('a', 'Reduced Height', 90), variation('b', 'Tango', 80), variation('c', 'Red', 99)]
     expect(pickForSearch(rows, [['red']]).fitting.map((v) => v.id)).toEqual(['c'])
     expect(pickForSearch(rows, [['tan']]).fitting.map((v) => v.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('uses the option matcher first, so a colour binds to the option it names', () => {
+    const desk = (id: string, finish: string, frame: string, price: number): SearchVariation => ({
+      id, optionNames: ['Finish', 'Frame Colour'], optionValues: [finish, frame], labels: [finish, frame], price, facts: inStock,
+    })
+    const rows = [desk('ww', 'White', 'White', 300), desk('wb', 'White', 'Black', 310), desk('bb', 'Black', 'Black', 320)]
+    const pick = pickForSearch(rows, [['black'], ['frame']], 'white top black frame')
+    expect(pick.fitting.map((v) => v.id)).toEqual(['wb'])
   })
 })

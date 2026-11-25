@@ -1,5 +1,5 @@
 import { emailsUsedUp, countEmail } from './emails'
-import { isPlausibleEmail, visitorWroteEmail } from './contact-text'
+import { greetingName, isPlausibleEmail, visitorWroteEmail } from './contact-text'
 import { chosenDeliveries, type ChosenDelivery } from './discussed-products'
 import { titleCaseName } from './name-case'
 import { basketServiceMenus, type ServiceOption } from './shop/delivery-choice'
@@ -71,8 +71,8 @@ export async function saveChatQuote(ctx: ToolContext, input: { name: string | nu
   if (input.lines.length === 0) return { ok: false, message: 'There is nothing to quote. Pass every product they want, each with its exact variation id and quantity.' }
   if (await emailsUsedUp(ctx)) return { ok: false, message: 'Enough emails have been sent from this chat to send a quote as well. Offer a callback instead.' }
 
-  const name = titleCaseName((input.name ?? '').trim() || ctx.visitorName?.trim() || '')
-  if (!name) return { ok: false, message: 'The quote needs their name. Ask for it and try again.' }
+  const name = titleCaseName(greetingName(input.name, ctx.visitorText, ctx.visitorName))
+  if (!name) return { ok: false, message: 'The quote needs their name, as they type it in this chat. Ask for it and try again; never work it out from an email address.' }
 
   const given = (input.email ?? '').trim().toLowerCase()
   const known = [ctx.visitorEmail, ctx.member?.email].filter((e): e is string => !!e).map((e) => e.trim().toLowerCase())

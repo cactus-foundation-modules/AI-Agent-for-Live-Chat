@@ -7,7 +7,7 @@ function line(body: string, at = 0): VisitorLine {
 }
 
 describe('isRepeated', () => {
-  it('spots the same message three times among the latest', () => {
+  it('spots the same message three times in a row', () => {
     expect(isRepeated([line('Hello?'), line('hello'), line('HELLO!')])).toBe(true)
     expect(isRepeated([line('Hello?'), line('hello')])).toBe(false)
   })
@@ -17,9 +17,15 @@ describe('isRepeated', () => {
     expect(isRepeated([line('ok'), line('ok'), line('ok'), line('ok')])).toBe(false)
   })
 
-  it('only looks at the latest six messages', () => {
-    const lines = [line('thanks'), line('thanks'), line('a'), line('b'), line('c'), line('d'), line('e'), line('thanks')]
+  it('counts only a run, nothing between (the live-site "tell me more" false alarm)', () => {
+    const lines = [line('tell me more'), line('oh great, tell me more about him'), line('tell me more', 45_000), line('who is oscar', 59_000), line('tell me more', 70_000)]
     expect(isRepeated(lines)).toBe(false)
+    expect(isRepeated([line('thanks'), line('thanks'), line('a'), line('thanks')])).toBe(false)
+  })
+
+  it('counts a run only inside a minute', () => {
+    expect(isRepeated([line('hello?', 0), line('hello?', 50_000), line('hello?', 59_000)])).toBe(true)
+    expect(isRepeated([line('hello?', 0), line('hello?', 90_000), line('hello?', 180_000)])).toBe(false)
   })
 })
 

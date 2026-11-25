@@ -153,11 +153,16 @@ describe('emailChatSummary lists the products the chat was about', () => {
   })
 
   it('greets the visitor in proper case', async () => {
-    await send(fakeContext({ visitorText: 'jo@example.com' }), [], 'chris')
+    await send(fakeContext({ visitorText: 'I am chris, jo@example.com' }), [], 'chris')
     expect(vars().customerName).toBe('Chris')
     vi.clearAllMocks()
     await send(fakeContext({ visitorText: 'jo@example.com', visitorName: "mary-jane o'neil" }), [])
     expect(vars().customerName).toBe("Mary-Jane O'Neil")
+  })
+
+  it('never greets by a name the visitor did not give (the live-site "Hi Chris")', async () => {
+    await send(fakeContext({ visitorText: 'jo@example.com' }), [], 'Jo')
+    expect(vars().customerName).toBe('there')
   })
 
   it('greets the order\'s customer in proper case on the order link', async () => {
@@ -175,6 +180,8 @@ describe('the note carries the delivery service the visitor chose', () => {
   it('hands the inbox each product\'s chosen service by its key, and nothing for the rest', () => {
     const refs = [{ moduleName: 'shop', kind: 'variation' as const, id: 'desk-black' }, { moduleName: 'shop', kind: 'product' as const, id: 'chair' }]
     expect(withChosenDeliveries(refs, [chair, deskBlack])).toEqual([{ ...refs[0], delivery: 'express' }, refs[1]])
+    const partial = { id: 'chair', url: 'https://shop.test/chair?seat=senna-yellow', parentId: null, picks: 'seat.senna-yellow' }
+    expect(withChosenDeliveries([{ moduleName: 'shop', kind: 'product', id: 'chair' }], [partial])).toEqual([{ moduleName: 'shop', kind: 'product', id: 'chair', picks: 'seat.senna-yellow' }])
   })
 
   it('passes the service to the inbox when the email goes, swapping a listing for its chosen variation', async () => {

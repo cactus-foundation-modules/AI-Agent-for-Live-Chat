@@ -14,6 +14,7 @@ import {
 import { summariseStockByOption, type OptionAvailability } from './variation-stock'
 import { canBuy, pickForSearch, type SearchVariation } from './search-variations'
 import { rankProducts, type IndexedProduct } from './search-rank'
+import { picksRef, settledOptions, type OptionPick as LabelledPick } from './partial-choice'
 import { pickVariations } from './variation-match'
 import { resolveProductDeliveryOptions } from '@/modules/shop/lib/detail-delivery'
 import { getProductFaqCategoryChain } from '@/modules/shop/lib/db/catalogue'
@@ -287,12 +288,13 @@ type SearchVariationRow = {
   low_stock_threshold: number | null
   out_of_stock_behaviour: string | null
   is_pre_order: boolean
+  option_names: string[] | null
   option_values: string[] | null
   attribute_labels: string[] | null
   option_picks: unknown
 }
 
-type LoadedVariation = SearchVariation & { picks: unknown }
+type LoadedVariation = SearchVariation & { picks: LabelledPick[] }
 
 /** Every switched-on variation of these listings, with the labels a search
  *  word can land on. */
@@ -306,13 +308,18 @@ async function searchVariations(productIds: string[], reach: SearchReach): Promi
   const rows = await prisma.$queryRaw<SearchVariationRow[]>(Prisma.sql`
     SELECT sv."product_id", child."id", child."price", child."sale_price", child."track_inventory", child."stock_count",
            child."low_stock_threshold", child."out_of_stock_behaviour", child."is_pre_order",
+           (SELECT array_agg(o."name" ORDER BY o."position", ov."position")
+              FROM "svr_variant_values" vv
+              JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
+              JOIN "svr_options" o ON o."id" = ov."option_id"
+             WHERE vv."variant_id" = sv."id") AS option_names,
            (SELECT array_agg(ov."label" ORDER BY o."position", ov."position")
               FROM "svr_variant_values" vv
               JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
               JOIN "svr_options" o ON o."id" = ov."option_id"
              WHERE vv."variant_id" = sv."id") AS option_values,
            ${attributeLabels} AS attribute_labels,
-           (SELECT json_agg(json_build_array(o."name", ov."slug") ORDER BY o."position", ov."position")
+           (SELECT json_agg(json_build_array(o."name", ov."slug", ov."label") ORDER BY o."position", ov."position")
               FROM "svr_variant_values" vv
               JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
               JOIN "svr_options" o ON o."id" = ov."option_id"
@@ -326,6 +333,7 @@ async function searchVariations(productIds: string[], reach: SearchReach): Promi
     const list = out.get(row.product_id) ?? []
     list.push({
       id: row.id,
+      optionNames: row.option_names ?? [],
       optionValues,
       labels: [...optionValues, ...(row.attribute_labels ?? [])],
       price: effectivePrice(numberOrNull(row.price) ?? 0, numberOrNull(row.sale_price)).now,
@@ -336,7 +344,7 @@ async function searchVariations(productIds: string[], reach: SearchReach): Promi
         outOfStockBehaviour: row.out_of_stock_behaviour,
         isPreOrder: row.is_pre_order,
       },
-      picks: row.option_picks,
+      picks: readLabelledPicks(row.option_picks),
     })
     out.set(row.product_id, list)
   }
@@ -347,7 +355,10 @@ async function searchVariations(productIds: string[], reach: SearchReach): Promi
  *  picked out (a colour, a size), `variation` is the cheapest of those - the
  *  one that can be bought when any can - with its own price, stock and page. */
 export type SearchedProduct = ProductSummary & {
-  variation: { id: string; options: string; price: string; availability: string; url: string | null } | null
+  /** `exact`: the words settle one variation, and `id` is its own. Otherwise
+   *  `id` is the listing's, `url` picks only the options the words settled
+   *  (`picks`, the inbox's spelling) and `price` is "from" the cheapest. */
+  variation: { id: string; options: string; price: string; availability: string; url: string | null; exact: boolean; picks: string | null } | null
 }
 
 export type SearchOptions = {
@@ -365,7 +376,7 @@ export type SearchOutcome = { products: SearchedProduct[]; note: string | null }
 
 type Ranked = { product: SearchedProduct; price: number }
 
-function rankListing(row: ProductRow, variations: LoadedVariation[] | undefined, words: string[][], ctx: {
+function rankListing(row: ProductRow, variations: LoadedVariation[] | undefined, words: string[][], query: string, ctx: {
   symbol: string
   base: PageBase
   spread: VariationSpread | null
@@ -384,7 +395,7 @@ function rankListing(row: ProductRow, variations: LoadedVariation[] | undefined,
     const price = effectivePrice(numberOrNull(row.price) ?? 0, numberOrNull(row.sale_price)).now
     return { product: { ...summary, variation: null }, price }
   }
-  const pick = pickForSearch(variations, words)
+  const pick = pickForSearch(variations, words, query)
   if (ctx.inStockOnly && pick.buyable.length === 0) return null
   const pool = ctx.inStockOnly ? pick.buyable : pick.fitting
   const low = Math.min(...pool.map((variation) => variation.price))
@@ -404,22 +415,59 @@ function rankListing(row: ProductRow, variations: LoadedVariation[] | undefined,
       ...summary,
       price: describePriceRange({ low, high }, ctx.symbol),
       availability,
-      variation: chosen
-        ? {
-            id: chosen.id,
-            options: chosen.optionValues.join(' / '),
-            price: formatPrice(chosen.price, ctx.symbol),
-            availability: stockSummary(chosen.facts),
-            url: productPage(ctx.base, row.slug, readPicks(chosen.picks)),
-          }
-        : null,
+      variation: chosen ? searchedVariation(row, variations, pick.fitting, pool, chosen, ctx) : null,
     },
     price: chosen ? chosen.price : low,
   }
 }
 
+/** What a search hit offers for the variations its words picked out: the one
+ *  variation when only one fits, else the listing with just the options the
+ *  words settled picked (lib/shop/partial-choice.ts), never the cheapest fit
+ *  with every other option chosen for the visitor. */
+function searchedVariation(
+  row: ProductRow,
+  all: readonly LoadedVariation[],
+  fitting: readonly LoadedVariation[],
+  pool: readonly LoadedVariation[],
+  cheapest: LoadedVariation,
+  ctx: { symbol: string; base: PageBase },
+): NonNullable<SearchedProduct['variation']> {
+  const exact = {
+    id: cheapest.id,
+    options: cheapest.optionValues.join(' / '),
+    price: formatPrice(cheapest.price, ctx.symbol),
+    availability: stockSummary(cheapest.facts),
+    url: productPage(ctx.base, row.slug, cheapest.picks.map(([name, slug]) => [name, slug])),
+    exact: true,
+    picks: null,
+  }
+  if (fitting.length < 2) return exact
+  const partial = partialChoice(all.map((v) => v.picks), fitting.map((v) => v.picks), pool.map((v) => v.price), ctx.base, row.slug, ctx.symbol)
+  if (!partial) return exact
+  return {
+    id: row.id,
+    options: partial.options,
+    price: partial.priceFrom,
+    availability: stockSummary(cheapest.facts),
+    url: partial.url,
+    exact: false,
+    picks: partial.picks,
+  }
+}
+
+/** Words that say what a product is NOT, or how to choose: they narrow the
+ *  variations (lib/shop/variation-match.ts reads the whole query for that) but
+ *  as search words they match nearly everything ("no" is in "now", "notes"). */
+const NOT_SEARCH_WORDS = new Set(['no', 'not', 'without', 'with', 'cheap', 'cheapest', 'cheaper', 'lowest', 'price', 'best', 'your', 'ur', 'wot', 'what'])
+
+/** Searched words, up to ten: a description with its options ("black height
+ *  adjustable desk 120cm no modesty panel black frame") must not lose its
+ *  last words to a cap of six. */
+const SEARCH_WORDS = 10
+
 export async function searchProducts(query: string, options: SearchOptions): Promise<SearchOutcome> {
-  const tokens = searchTokens(query)
+  const tokens = searchTokens(query, SEARCH_WORDS + NOT_SEARCH_WORDS.size).filter((token) => !NOT_SEARCH_WORDS.has(token)).slice(0, SEARCH_WORDS)
   if (tokens.length === 0 && !options.category) return { products: [], note: 'Nothing to search for. Ask the visitor what they are looking for.' }
   const config = await getShopConfigCached()
   const reach = await searchReach()
@@ -445,7 +493,7 @@ export async function searchProducts(query: string, options: SearchOptions): Pro
   const ranked: Ranked[] = []
   let leftOut = 0
   for (const row of rows) {
-    const hit = rankListing(row, variations.get(row.id), words, {
+    const hit = rankListing(row, variations.get(row.id), words, query, {
       symbol: config.currencySymbol,
       base,
       spread: spreads.get(row.id) ?? null,
@@ -473,7 +521,7 @@ export async function searchProducts(query: string, options: SearchOptions): Pro
       `Prices are ${basis}.`,
       options.sort === 'price' ? 'Listed cheapest first, by the price of what fits the words searched.' : '',
       options.inStockOnly && leftOut > 0 ? `${leftOut} other match(es) are out of stock right now and were left out: do not offer them.` : '',
-      narrowed ? 'Where a product has a variation, the words searched picked out that variation (a colour, a size): quote its price and show its url, not the product\'s, so the card and Add to basket are for that variation.' : '',
+      narrowed ? 'Where a product has a variation, the words searched picked out what they want (a colour, a size): quote its price and show its url, not the product\'s. A variation marked exact is one single variation. One not marked exact picks only the options they asked for and leaves the rest for them to choose: quote its price as "from", and never pick the other options for them.' : '',
       'To recommend one, put its url (the variation\'s, where there is one) on a line of its own in your reply, never as a markdown link: the chat shows it as a product with Add to basket.',
       ranged ? 'A price given as a range belongs to a product sold in several variations: call get_product with the options the visitor wants to get the exact price.' : '',
       loosened ? 'These match only some of the words searched for, so check they suit.' : '',
@@ -522,6 +570,10 @@ export type ProductDetail = ProductSummary & {
   /** The variations that fit the options asked for, each with its own id and
    *  exact price. Only present when get_product was given options. */
   matchingVariations: VariationMatch[] | null
+  /** When several variations fit the options asked for: only the options the
+   *  visitor chose, as a page address that picks just those. Show this, not a
+   *  variation, until they have chosen the rest. Null otherwise. */
+  chosenOptions: PartialChoice | null
   /** When more variations fit than matchingVariations lists: for each option
    *  the caller has not settled, which values are in stock across EVERY fit.
    *  Names only. Null otherwise. */
@@ -617,6 +669,44 @@ export type VariationsFound = {
    *  nearest, and `unmet` says what they lack. */
   closest: boolean
   unmet: string[]
+  /** When several fit: the options they all share (what the visitor's words
+   *  settled), as a page address with only those picked, their labels and the
+   *  Unified Inbox's picks string. Null when one fits or nothing was settled. */
+  chosen: PartialChoice | null
+}
+
+export type PartialChoice = { url: string | null; options: string; picks: string | null; priceFrom: string }
+
+/** A variation's options as [name, slug, label], as the query hands them. */
+function readLabelledPicks(value: unknown): LabelledPick[] {
+  if (!Array.isArray(value)) return []
+  const out: LabelledPick[] = []
+  for (const entry of value) {
+    if (Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string') {
+      out.push([entry[0], entry[1], typeof entry[2] === 'string' ? entry[2] : entry[1]])
+    }
+  }
+  return out
+}
+
+/** A partial choice for these fits, or null when they settle nothing. */
+function partialChoice(
+  all: ReadonlyArray<readonly LabelledPick[]>,
+  fits: ReadonlyArray<readonly LabelledPick[]>,
+  prices: readonly number[],
+  base: PageBase,
+  slug: string | null,
+  symbol: string,
+): PartialChoice | null {
+  if (fits.length < 2) return null
+  const settled = settledOptions(all, fits)
+  if (settled.length === 0) return null
+  return {
+    url: productPage(base, slug, settled.map(([name, value]) => [name, value])),
+    options: settled.map(([, , label]) => label).join(' / '),
+    picks: picksRef(settled),
+    priceFrom: `from ${formatPrice(Math.min(...prices), symbol)}`,
+  }
 }
 
 /** The switched-on variations of a listing the caller's words pick out ("black
@@ -648,7 +738,7 @@ async function findVariations(
               JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
               JOIN "svr_options" o ON o."id" = ov."option_id"
              WHERE vv."variant_id" = sv."id") AS option_values,
-           (SELECT json_agg(json_build_array(o."name", ov."slug") ORDER BY o."position", ov."position")
+           (SELECT json_agg(json_build_array(o."name", ov."slug", ov."label") ORDER BY o."position", ov."position")
               FROM "svr_variant_values" vv
               JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
               JOIN "svr_options" o ON o."id" = ov."option_id"
@@ -685,7 +775,17 @@ async function findVariations(
   const availableByOption = fits.length > matches.length
     ? summariseStockByOption(fits.map((fit) => ({ optionNames: fit.optionNames, optionValues: fit.optionValues, facts: facts(fit.row) })))
     : null
-  return { matches, total: fits.length, availableByOption, ignored: pick.ignored, closest: pick.closest, unmet: pick.unmet }
+  const chosen = pick.closest
+    ? null
+    : partialChoice(
+        candidates.map((fit) => readLabelledPicks(fit.row.option_picks)),
+        fits.map((fit) => readLabelledPicks(fit.row.option_picks)),
+        fits.map((fit) => effectivePrice(numberOrNull(fit.row.price) ?? 0, numberOrNull(fit.row.sale_price)).now),
+        base,
+        listingSlug,
+        symbol,
+      )
+  return { matches, total: fits.length, availableByOption, ignored: pick.ignored, closest: pick.closest, unmet: pick.unmet, chosen }
 }
 
 async function loadSpecifications(productId: string): Promise<Array<{ name: string; values: string[] }>> {
@@ -776,6 +876,7 @@ export async function getProductDetail(
         })
       : null,
     matchingVariations: found ? found.matches : null,
+    chosenOptions: found?.chosen ?? null,
     availableByOption: found?.availableByOption ?? null,
     specifications,
     questionsAnswered,
@@ -828,13 +929,16 @@ function priceNoteCore(
   if (found.closest) {
     return `${base}${setAside} No variation has everything asked for; these are the nearest, and they do not have: ${found.unmet.join(', ')}. Tell the visitor plainly which part of their choice is not sold and offer the nearest; never say the whole product is unavailable.`
   }
+  const partly = found.chosen
+    ? ` They have chosen only some options (${found.chosen.options}): to show or send the product, use chosenOptions.url and quote chosenOptions.priceFrom. It opens the product with just their choices picked and the rest for them to choose. Never pick the other options for them by showing one of matchingVariations; only once they have chosen everything is it a single variation.`
+    : ''
   if (found.total > found.matches.length) {
-    return `${base}${setAside} ${found.total} variations fit those words and only ${found.matches.length} are listed. If the visitor asked what is in stock or available, answer from availableByOption, which covers every one that fits: name about three values from inStock (and say which are out of stock if they asked), then offer the rest; do not ask them to pick first. A value counts as in stock if it is in stock in at least one of the combinations that fit. Only when they want a price or a basket line, ask which option is still undecided, then call get_product again with more words in "options".`
+    return `${base}${setAside}${partly} ${found.total} variations fit those words and only ${found.matches.length} are listed. If the visitor asked what is in stock or available, answer from availableByOption, which covers every one that fits: name about three values from inStock (and say which are out of stock if they asked), then offer the rest; do not ask them to pick first. A value counts as in stock if it is in stock in at least one of the combinations that fit. Only when they want the exact price of one particular combination, ask which option is still undecided, then call get_product again with more words in "options".`
   }
   if (found.matches.length === 1) {
     return `${base}${setAside} Quote the price in matchingVariations: it is the exact price of what the visitor asked about. To show it, put that variation's url on a line of its own (not the product's), and use its id in email_summary product_ids, so Add to basket and the email are for exactly this variation.`
   }
-  return `${base}${setAside} Several variations fit. If the visitor already chose the option that tells them apart earlier in this chat, call get_product again with that added rather than asking. Otherwise quote the price of each that matters, or ask which one they want. Once they have chosen, show that variation's url on a line of its own and use its id in email_summary product_ids, not the product's.`
+  return `${base}${setAside}${partly} Several variations fit. If the visitor already chose the option that tells them apart earlier in this chat, call get_product again with that added rather than asking. Otherwise quote the price of each that matters, or ask which one they want. Once they have chosen, show that variation's url on a line of its own and use its id in email_summary product_ids, not the product's.`
 }
 
 /** What the assistant discussed, as references the unified inbox can print. An id
@@ -927,7 +1031,7 @@ export async function findBySku(spoken: string): Promise<{ hits: SkuHit[]; note:
         SELECT child."id", child."name", child."slug", child."sku", child."price", child."sale_price", child."track_inventory",
                child."stock_count", child."low_stock_threshold", child."out_of_stock_behaviour", child."is_pre_order",
                sv."product_id" AS parent_id, parent."name" AS parent_name, parent."slug" AS parent_slug,
-               (SELECT json_agg(json_build_array(o."name", ov."slug") ORDER BY o."position", ov."position")
+               (SELECT json_agg(json_build_array(o."name", ov."slug", ov."label") ORDER BY o."position", ov."position")
                   FROM "svr_variant_values" vv
                   JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
                   JOIN "svr_options" o ON o."id" = ov."option_id"

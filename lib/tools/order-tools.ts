@@ -115,19 +115,19 @@ export const emailOrderLinkTool = defineTool({
 
 export const emailSummaryTool = defineTool({
   name: 'email_summary',
-  description: "Email the visitor a short written note of the chat (product advice, answers to their questions), with the shop's own links to the products, pages and articles you pass. Only once they have said yes to it. ALWAYS pass product_ids with every product you recommended or they chose (the chosen variation's own id where there is one); the email lists them with picture, link and price, and with the delivery service they chose for one (choose_delivery) under it. Goes to an email address they typed in this chat (pass it in email), or the one on an order proved in this chat. Never include order details.",
+  description: "Email the visitor a short written note of the chat (product advice, answers to their questions), with the shop's own links to the products, pages and articles you pass. Only once they have said yes to it. ALWAYS pass product_ids with every product you recommended or they chose (the variation's own id when they chose every option, otherwise the product's id, which goes with just the options they chose picked); the email lists them with picture, link and price, and with the delivery service they chose for one (choose_delivery) under it. Goes to an email address they typed in this chat (pass it in email), or the one on an order proved in this chat. Never include order details.",
   parameters: {
     type: 'object',
     properties: {
       visitor_agreed: text(VISITOR_AGREED),
       email: text('The email address exactly as they typed it in this chat. Omit to use the address on an order proved in this chat, or the one they gave the chat form.'),
       order_number: text('Only to send it to the address on one particular order proved in this chat, when several are.'),
-      name: text('Their first name for the greeting, if they gave it.'),
+      name: text('Their first name for the greeting, only if they typed it in this chat. Never work one out from an email address; leave it out if you do not know it.'),
       subject: text('A short subject line, for example "The standing desks we talked about".'),
       summary: text('The note itself: plain sentences covering what they wanted, what you recommended and why, and the key facts. No prices (the email lists them, delivery included), no order details, no web addresses.'),
       product_ids: {
         type: 'array',
-        description: `Always fill this in when any product came up: the id of every product you recommended or they chose, the chosen variation's own id (from matchingVariations or find_by_sku) where there is one, never only the listing's. The email lists each with its picture, link and price. At most ${MAX_PRODUCTS_PER_EMAIL}.`,
+        description: `Always fill this in when any product came up: the id of every product you recommended or they chose. The variation's own id (from matchingVariations or find_by_sku) when they chose every option; when they chose only some, the product's own id, and the email links it with exactly those options picked. The email lists each with its picture, link and price. At most ${MAX_PRODUCTS_PER_EMAIL}.`,
         items: text('One product or variation id, exactly as the tools returned it.'),
       },
       link_ids: {
@@ -311,7 +311,7 @@ export const sendTextTool = defineTool({
       order_number: text('Only when several orders are proved in this chat: the one they mean (its page for order_link, or its mobile number for summary).'),
       product_ids: {
         type: 'array',
-        description: 'For summary: the products to link, each the id the tools returned (the chosen variation\'s own id where there is one). Omit to link the products this chat settled on. A product they chose a delivery service for is linked with it chosen.',
+        description: 'For summary: the products to link, each the id the tools returned (a variation\'s own id only when they chose every option; otherwise the product\'s id, linked with just the options they chose). Omit to link the products this chat settled on. A product they chose a delivery service for is linked with it chosen.',
         items: text('One product or variation id, exactly as the tools returned it.'),
       },
       link_ids: {

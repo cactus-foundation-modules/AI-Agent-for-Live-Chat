@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { askForColleague } from '@/modules/chat/lib/responder-api'
 import { saveCallback } from '../callbacks'
-import { isPlausibleEmail } from '../contact-text'
+import { isPlausibleEmail, visitorTyped } from '../contact-text'
 import { enterWaiting, setCallbackWanted } from '../conversations'
 import { scheduleHandoverCheck } from '../handover'
 import { recordUnanswered } from '../unanswered'
@@ -26,13 +26,7 @@ import { defineTool } from './registry'
 // actually typed in this chat.
 // ---------------------------------------------------------------------------
 
-/** Whether the visitor really typed the words given as their agreement. Case,
- *  spacing and punctuation aside, they must appear in what they wrote. Pure. */
-export function visitorTyped(visitorText: string, said: string): boolean {
-  const plain = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-  const words = plain(said)
-  return words.length > 0 && ` ${plain(visitorText)} `.includes(` ${words} `)
-}
+export { visitorTyped }
 
 export const handToColleague = defineTool({
   name: 'hand_to_colleague',

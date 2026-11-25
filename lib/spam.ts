@@ -3,7 +3,7 @@
 // spent on the model. Pure: the visitor's messages in, a reason or null out.
 //
 // Four signs, each one enough on its own (the owner's rule):
-//   - the same message three or more times
+//   - the same message three or more times in a row, within a minute
 //   - keyboard-mashing or gibberish
 //   - four or more links in one message
 //   - a message arriving faster than a person could type it
@@ -21,16 +21,15 @@ export type NotGenuineReason = 'repeated' | 'gibberish' | 'links' | 'too_fast'
 
 /** Plain words for the tool log and the settings screen. */
 export const REASON_WORDS: Record<NotGenuineReason, string> = {
-  repeated: 'Sent the same message three or more times',
+  repeated: 'Sent the same message three or more times in a row',
   gibberish: 'Keyboard-mashing or gibberish',
   links: 'Four or more links in one message',
   too_fast: 'Messages arriving faster than anybody could type them',
 }
 
 export const REPEAT_LIMIT = 3
-/** Repeats are counted among this many of the visitor's latest messages, so a
- *  "thanks" early on and another an hour later do not add up. */
-export const REPEAT_WINDOW = 6
+/** Repeats count only as a run, one straight after another, inside this long. */
+export const REPEAT_SPAN_MS = 60_000
 export const LINK_LIMIT = 4
 /** A message at least this long... */
 export const FAST_MIN_CHARS = 150
@@ -42,15 +41,29 @@ function normalise(body: string): string {
   return body.toLowerCase().replace(/\s+/g, ' ').replace(/[.!?,]+$/g, '').trim()
 }
 
-/** The same thing, three or more times among their latest messages. Short
- *  everyday replies ("ok", "yes", "no") never count. */
+/**
+ * The same thing three or more times in a row, nothing else between, all
+ * inside a minute: what flooding looks like. Short everyday replies ("ok",
+ * "yes", "no") never count.
+ *
+ * Learned on a live chat: a visitor asking about the boss and then the dog
+ * wrote "tell me more" three times, each answered, with other questions in
+ * between, and was treated as a time-waster. Counting any three among the
+ * latest six could not tell that from a flood; a run inside a minute can.
+ */
 export function isRepeated(lines: readonly VisitorLine[]): boolean {
-  const recent = lines.slice(-REPEAT_WINDOW)
-  const latest = recent[recent.length - 1]
+  const latest = lines[lines.length - 1]
   if (!latest) return false
   const wanted = normalise(latest.body)
   if (wanted.length < 4) return false
-  return recent.filter((line) => normalise(line.body) === wanted).length >= REPEAT_LIMIT
+  let run = 0
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line || normalise(line.body) !== wanted) break
+    if (latest.createdAt.getTime() - line.createdAt.getTime() > REPEAT_SPAN_MS) break
+    run++
+  }
+  return run >= REPEAT_LIMIT
 }
 
 export function countLinks(body: string): number {

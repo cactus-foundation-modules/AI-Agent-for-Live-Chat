@@ -1,4 +1,5 @@
 import { stockBucket } from './variation-stock'
+import { pickVariations } from './variation-match'
 import type { StockFacts } from './product-format'
 
 // ---------------------------------------------------------------------------
@@ -19,11 +20,17 @@ import type { StockFacts } from './product-format'
 //     pre-order, or out of stock but still orderable (made to order);
 //   - when only what can be bought is wanted, a listing with no fitting
 //     variation that can be bought is left out.
+//
+// Which variations fit is decided first by the option matcher get_product uses
+// (lib/shop/variation-match.ts), so "black frame" binds to the frame and "no
+// modesty panel" means without; only when that narrows nothing are the
+// attribute labels (a colour family) tried.
 // ---------------------------------------------------------------------------
 
 export type SearchVariation = {
   id: string
-  /** The option values, in the shop's order. */
+  /** The option names and values, in the shop's order. */
+  optionNames: readonly string[]
   optionValues: readonly string[]
   /** Every label the variation carries: option values and the attribute values
    *  stamped on it (a colour family such as "Green & Black"). */
@@ -58,13 +65,23 @@ function labelHas(label: string, variants: readonly string[]): boolean {
 
 /** The variations of one listing the searched words fit, and the one to quote.
  *  `words` is each searched word with its spellings, as expandSearchWords gives. */
-export function pickForSearch<V extends SearchVariation>(variations: readonly V[], words: readonly (readonly string[])[]): ListingPick<V> {
+export function pickForSearch<V extends SearchVariation>(variations: readonly V[], words: readonly (readonly string[])[], query = ''): ListingPick<V> {
+  const matched = query
+    ? pickVariations(query, variations.map((variation) => ({ optionNames: variation.optionNames, optionValues: variation.optionValues, name: '' })))
+    : null
+  if (matched && !matched.closest && matched.fits.length > 0 && matched.fits.length < variations.length) {
+    const fitting = matched.fits.map((index) => variations[index]).filter((variation): variation is V => !!variation)
+    const buyable = fitting.filter((variation) => canBuy(variation.facts))
+    return { narrowed: true, fitting, buyable, cheapest: cheapestOf(buyable.length > 0 ? buyable : fitting) }
+  }
   const carried = words.filter((variants) => variations.some((variation) => variation.labels.some((label) => labelHas(label, variants))))
   const fitting = carried.length === 0
     ? [...variations]
     : variations.filter((variation) => carried.every((variants) => variation.labels.some((label) => labelHas(label, variants))))
   const buyable = fitting.filter((variation) => canBuy(variation.facts))
-  const pool = buyable.length > 0 ? buyable : fitting
-  const cheapest = pool.reduce<V | null>((best, variation) => (best === null || variation.price < best.price ? variation : best), null)
-  return { narrowed: carried.length > 0, fitting, buyable, cheapest }
+  return { narrowed: carried.length > 0, fitting, buyable, cheapest: cheapestOf(buyable.length > 0 ? buyable : fitting) }
+}
+
+function cheapestOf<V extends SearchVariation>(pool: readonly V[]): V | null {
+  return pool.reduce<V | null>((best, variation) => (best === null || variation.price < best.price ? variation : best), null)
 }

@@ -4,9 +4,10 @@
 
 /** The model could not be reached, or gave nothing usable. A colleague has
  *  been asked for. */
-export function cannotAnswerLine(online: boolean): string {
-  return online
-    ? 'Sorry, I cannot answer that just now - I have asked a colleague to pick this up.'
+export function cannotAnswerLine(online: boolean, haveEmail = false): string {
+  if (online) return 'Sorry, I cannot answer that just now - I have asked a colleague to pick this up.'
+  return haveEmail
+    ? 'Sorry, I cannot answer that just now. A colleague will get back to you by email as soon as they can.'
     : 'Sorry, I cannot answer that just now. If you leave your name and email address, a colleague will get back to you as soon as they can.'
 }
 

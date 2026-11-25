@@ -1,4 +1,5 @@
 import { withDeliveryParam } from './shop/product-links'
+import { parsePicksRef } from './shop/partial-choice'
 
 // ---------------------------------------------------------------------------
 // The products a chat has actually been about, kept on the chat
@@ -61,6 +62,10 @@ export type DiscussedProduct = {
   name?: string
   /** True once the assistant has shown it (its address in a reply). */
   linked?: boolean
+  /** For a listing where the visitor chose only some options: those options,
+   *  in the Unified Inbox's spelling (lib/shop/partial-choice.ts). `url` then
+   *  picks just those. Absent everywhere else. */
+  picks?: string
 }
 
 export type ChosenDelivery = { key: string; label: string }
@@ -84,6 +89,7 @@ export function parseDiscussedProducts(value: unknown): DiscussedProduct[] {
     if (!id) continue
     const delivery = parseDelivery(record.delivery)
     const name = text(record.name)
+    const picks = parsePicksRef(record.picks)
     entries.push({
       id,
       url: text(record.url),
@@ -91,6 +97,7 @@ export function parseDiscussedProducts(value: unknown): DiscussedProduct[] {
       ...(delivery ? { delivery } : {}),
       ...(name ? { name: name.slice(0, 200) } : {}),
       ...(record.linked === true ? { linked: true } : {}),
+      ...(picks && text(record.parentId) === null ? { picks } : {}),
     })
   }
   return rememberProducts([], entries)
@@ -115,13 +122,22 @@ function parseDelivery(value: unknown): ChosenDelivery | null {
 export function rememberProducts(list: readonly DiscussedProduct[], found: readonly DiscussedProduct[]): DiscussedProduct[] {
   let out = [...list]
   for (const entry of found) {
-    const chosen = entry.parentId === null ? [...out].reverse().find((kept) => kept.parentId === entry.id) : undefined
+    // A listing read again without a new choice keeps the choice made for it:
+    // the variation chosen, or the options chosen. A NEW partial choice (picks)
+    // replaces whatever was chosen before, because it is what they asked for
+    // now ("I only wanted the yellow selected").
     const same = out.find((kept) => kept.id === entry.id)
+    const chosen = entry.parentId === null && !entry.picks
+      ? [...out].reverse().find((kept) => kept.parentId === entry.id) ?? (same?.picks ? same : undefined)
+      : undefined
     // A variation chosen for a listing already shown is what was shown.
     const parent = entry.parentId ? out.find((kept) => kept.id === entry.parentId) : undefined
     const delivery = entry.delivery ?? same?.delivery
     const name = entry.name ?? same?.name ?? parent?.name
-    const linked = entry.linked === true || same?.linked === true || parent?.linked === true
+    // A partial choice replacing a variation of its own listing that was shown
+    // is still the product that was shown.
+    const replaced = entry.picks ? out.some((kept) => kept.parentId === entry.id && kept.linked) : false
+    const linked = entry.linked === true || same?.linked === true || parent?.linked === true || replaced
     const fresh: DiscussedProduct = {
       ...entry,
       ...(delivery ? { delivery } : {}),
@@ -129,7 +145,7 @@ export function rememberProducts(list: readonly DiscussedProduct[], found: reado
       ...(linked ? { linked: true } : {}),
     }
     const newest = chosen ? { ...chosen, ...(linked ? { linked: true } : {}) } : fresh
-    out = out.filter((kept) => kept.id !== newest.id && kept.id !== newest.parentId)
+    out = out.filter((kept) => kept.id !== newest.id && kept.id !== newest.parentId && !(newest.picks && kept.parentId === newest.id))
     out.push(newest)
   }
   return out.slice(-MAX_DISCUSSED_PRODUCTS)
@@ -226,10 +242,13 @@ export function fromProductDetail(detail: {
   name: string
   url: string | null
   matchingVariations: ReadonlyArray<{ id: string; url: string | null }> | null
+  chosenOptions?: { url: string | null; picks: string | null } | null
 }): DiscussedProduct[] {
   const variations = detail.matchingVariations ?? []
   const only = variations.length === 1 ? variations[0] : undefined
   if (only) return [{ id: only.id, url: only.url, parentId: detail.id, name: detail.name }]
+  const partial = detail.chosenOptions
+  if (partial?.picks) return [{ id: detail.id, url: partial.url ?? detail.url, parentId: null, name: detail.name, picks: partial.picks }]
   return [{ id: detail.id, url: detail.url, parentId: null, name: detail.name }]
 }
 
@@ -241,11 +260,22 @@ export function shownByTool(products: ReadonlyArray<{
   name: string
   url: string | null
   variations?: ReadonlyArray<{ id: string; url: string | null }> | null
+  /** A partial choice the tool offered: the listing with only some options. */
+  partial?: { url: string | null; picks: string | null } | null
 }>): DiscussedProduct[] {
   return products.flatMap((product) => [
     { id: product.id, url: product.url, parentId: null, name: product.name },
-    ...(product.variations ?? []).map((variation) => ({ id: variation.id, url: variation.url, parentId: product.id, name: product.name })),
+    ...(product.partial?.picks && product.partial.url
+      ? [{ id: product.id, url: product.partial.url, parentId: null, name: product.name, picks: product.partial.picks }]
+      : []),
+    ...(product.variations ?? []).filter((variation) => variation.id !== product.id)
+      .map((variation) => ({ id: variation.id, url: variation.url, parentId: product.id, name: product.name })),
   ])
+}
+
+/** The partial choice recorded for each listing, by its id. Pure. */
+export function chosenPicks(list: readonly DiscussedProduct[]): Map<string, string> {
+  return new Map(list.flatMap((entry) => (entry.picks ? [[entry.id, entry.picks] as const] : [])))
 }
 
 /** What find_by_sku found: the code's one hit, or its one exact hit among

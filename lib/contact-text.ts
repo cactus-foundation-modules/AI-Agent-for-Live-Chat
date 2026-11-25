@@ -63,3 +63,27 @@ export function findName(text: string): string | null {
   if (!words.every((w) => NAME_WORD.test(w))) return null
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ').slice(0, 80)
 }
+
+/** Whether the visitor really typed these words in the chat. Case, spacing and
+ *  punctuation aside, they must appear in what they wrote, as whole words. Pure. */
+export function visitorTyped(visitorText: string, said: string): boolean {
+  const plain = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  const words = plain(said)
+  return words.length > 0 && ` ${plain(visitorText)} `.includes(` ${words} `)
+}
+
+/**
+ * The name to greet somebody by in an email: one the model passes only when
+ * the visitor typed it in the chat or gave it to Live Chat's contact box, else
+ * the contact box's own, else none. Never a name worked out from an email
+ * address: learned on a live chat, where "Hi Chris," went to chris@... before
+ * the visitor had given any name at all. Pure.
+ */
+export function greetingName(given: string | null | undefined, visitorText: string, contactName: string | null | undefined): string {
+  const name = given?.trim() ?? ''
+  const contact = contactName?.trim() ?? ''
+  // An email address is not a name: "chris@..." must not count as "Chris".
+  const words = visitorText.replace(/\S+@\S+/g, ' ')
+  if (name && (visitorTyped(words, name) || (contact && name.toLowerCase() === contact.toLowerCase()))) return name
+  return contact
+}

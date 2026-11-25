@@ -152,7 +152,11 @@ export const searchProductsTool = defineTool({
       sort,
       category,
     })
-    noteShown(ctx, shownByTool(products.map((product) => ({ ...product, variations: product.variation ? [product.variation] : null }))))
+    noteShown(ctx, shownByTool(products.map((product) => ({
+      ...product,
+      variations: product.variation?.exact ? [product.variation] : null,
+      partial: product.variation && !product.variation.exact ? { url: product.variation.url, picks: product.variation.picks } : null,
+    }))))
     return {
       ok: true,
       products: products.map((product) => ({
@@ -217,11 +221,12 @@ export const getProductTool = defineTool({
     const detail = await getProductDetail(reference, options, args.quantity ?? null)
     if (!detail) return { ok: false, message: 'That product could not be found. Search for it with search_products and use the id it returns.' }
     await remember(ctx, fromProductDetail(detail))
-    noteShown(ctx, shownByTool([{ id: detail.id, name: detail.name, url: detail.url, variations: detail.matchingVariations }]))
+    noteShown(ctx, shownByTool([{ id: detail.id, name: detail.name, url: detail.url, variations: detail.matchingVariations, partial: detail.chosenOptions }]))
     const product = {
       ...detail,
       url: addressWithChoice(detail.id, detail.url, ctx.products),
       matchingVariations: detail.matchingVariations?.map((variation) => ({ ...variation, url: addressWithChoice(variation.id, variation.url, ctx.products) })) ?? null,
+      chosenOptions: detail.chosenOptions ? { ...detail.chosenOptions, url: addressWithChoice(detail.id, detail.chosenOptions.url, ctx.products) } : null,
     }
     return { ok: true, product }
   },

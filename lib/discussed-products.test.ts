@@ -198,3 +198,36 @@ describe('what the assistant showed (the live-site bug: an email of the wrong pr
     expect(parseDiscussedProducts([{ ...crew, linked: true }, { ...cabinet, linked: 'yes' }])).toEqual([{ ...crew, linked: true }, cabinet])
   })
 })
+
+describe('a partial choice (the live-site yellow chair)', () => {
+  const full = { id: 'eclipse-yellow-noarms', url: 'https://shop.test/eclipse?arms=no-arms&seat=senna-yellow', parentId: 'eclipse', name: 'Eclipse', linked: true }
+  const partial = { id: 'eclipse', url: 'https://shop.test/eclipse?seat=senna-yellow', parentId: null, name: 'Eclipse', picks: 'seat.senna-yellow' }
+
+  it('get_product: the listing with just the options chosen, when several fit', () => {
+    expect(fromProductDetail({ id: 'eclipse', name: 'Eclipse', url: 'https://shop.test/eclipse', matchingVariations: [{ id: 'a', url: null }, { id: 'b', url: null }], chosenOptions: { url: partial.url, picks: partial.picks } }))
+      .toEqual([partial])
+  })
+
+  it('replaces a fully chosen variation the visitor never asked for, keeping "shown"', () => {
+    expect(rememberProducts([full], [partial])).toEqual([{ ...partial, linked: true }])
+  })
+
+  it('survives the listing being read again with no new choice', () => {
+    expect(rememberProducts([partial], [{ id: 'eclipse', url: 'https://shop.test/eclipse', parentId: null, name: 'Eclipse' }])).toEqual([partial])
+  })
+
+  it('gives way to a variation chosen later', () => {
+    expect(rememberProducts([partial], [full]).map((e) => e.id)).toEqual(['eclipse-yellow-noarms'])
+  })
+
+  it('reads back, and only on a listing', () => {
+    expect(parseDiscussedProducts([partial])).toEqual([partial])
+    expect(parseDiscussedProducts([{ ...full, picks: 'seat.senna-yellow' }])).toEqual([full])
+    expect(parseDiscussedProducts([{ ...partial, picks: 'seat=yellow' }])).toEqual([{ ...partial, picks: undefined }].map(({ picks: _p, ...rest }) => rest))
+  })
+
+  it('a search result shown with only some options picked is recorded that way', () => {
+    const shown = shownByTool([{ id: 'eclipse', name: 'Eclipse', url: 'https://shop.test/eclipse', partial: { url: partial.url, picks: partial.picks } }])
+    expect(markLinked([], shown, `Here it is:\n${partial.url}`)).toEqual([{ ...partial, linked: true }])
+  })
+})
