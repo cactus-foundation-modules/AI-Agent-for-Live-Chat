@@ -160,6 +160,18 @@ describe('emailChatSummary lists the products the chat was about', () => {
     expect(vars().customerName).toBe("Mary-Jane O'Neil")
   })
 
+  it('signs off with the assistant\'s own signature, as the phone assistant does', async () => {
+    const { signatureHtml } = await import('./emails')
+    expect(signatureHtml('Charlie\nDeskwell <hi@x>')).toBe('<p style="margin:24px 0 0;">Charlie<br>Deskwell &lt;hi@x&gt;</p>')
+    expect(signatureHtml('  ')).toBe('')
+    expect(signatureHtml(undefined)).toBe('')
+  })
+
+  it('writes VAT in the note the way the product list does (the live-site "plus VAT")', async () => {
+    const { emailWording } = await import('./emails')
+    expect(emailWording('Delivery is £25 plus VAT, or Plus  vat.')).toBe('Delivery is £25 + VAT, or + VAT.')
+  })
+
   it('never greets by a name the visitor did not give (the live-site "Hi Chris")', async () => {
     await send(fakeContext({ visitorText: 'jo@example.com' }), [], 'Jo')
     expect(vars().customerName).toBe('there')

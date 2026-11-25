@@ -44,7 +44,7 @@ const ORDER = [
   'search_products', 'find_by_sku', 'get_product', 'list_categories', 'get_faqs', 'get_payment_info',
   'lookup_order', 'list_my_orders', 'email_order_link', 'email_summary', 'get_visitor_history',
   'search_pages', 'check_delivery_postcode', 'get_reviews', 'search_guides', 'raise_order_request', 'save_quote',
-  'send_text', 'choose_delivery',
+  'send_text', 'choose_delivery', 'get_shop_reviews',
 ]
 
 describe('the tool list', () => {
@@ -57,8 +57,8 @@ describe('the tool list', () => {
     for (const gone of ['lookup_caller_orders', 'build_basket', 'get_caller_history']) expect(names).not.toContain(gone)
   })
 
-  it('appends choose_delivery at the very end, after send_text, so the cached start is unchanged', () => {
-    expect(TOOLS.slice(-2).map((tool) => tool.name)).toEqual(['send_text', 'choose_delivery'])
+  it('appends new tools at the very end, so the cached start is unchanged', () => {
+    expect(TOOLS.slice(-3).map((tool) => tool.name)).toEqual(['send_text', 'choose_delivery', 'get_shop_reviews'])
   })
 
   it('shows the model a JSON schema for each, and the Notes panel words for each', () => {

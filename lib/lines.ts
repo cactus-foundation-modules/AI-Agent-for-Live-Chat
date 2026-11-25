@@ -21,21 +21,13 @@ export function comeBackLine(reason: 'timeout' | 'offline'): string {
 
 // --- the not-genuine flow (lib/not-genuine.ts) ------------------------------
 
-/** The first thing said once a chat is flagged. */
-export const NOT_GENUINE_FIRST =
-  'I am going to pass this chat to a colleague. So they can get back to you, please reply with your name and email address.'
-
-/** Asking again, when the reply carried no email address. */
-export const NOT_GENUINE_AGAIN = [
-  'Sorry, I did not catch an email address there. Please reply with your name and email address and a colleague will be in touch.',
-  'A colleague can only get back to you with an email address. Please reply with your name and email address.',
-] as const
-
-export function notGenuineAskLine(askNumber: number): string {
-  if (askNumber <= 1) return NOT_GENUINE_FIRST
-  return NOT_GENUINE_AGAIN[Math.min(askNumber - 2, NOT_GENUINE_AGAIN.length - 1)] ?? NOT_GENUINE_FIRST
+/** The first time a chat is flagged: calm, and an open door. */
+export function notGenuineFirstLine(businessName: string): string {
+  const shop = businessName.trim()
+  return `I'm here to help with ${shop ? `${shop}'s` : 'our'} products, orders and deliveries. If there's anything like that I can do for you, just ask.`
 }
 
-export function notGenuineThanksLine(name: string | null): string {
-  return `Thank you${name ? `, ${name}` : ''}. I have passed this to a colleague, who will be in touch by email.`
+/** The second time: the assistant leaves the chat there. */
+export function notGenuineLastLine(): string {
+  return "I'll leave the chat there for now."
 }

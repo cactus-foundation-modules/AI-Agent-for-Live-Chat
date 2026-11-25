@@ -11,6 +11,7 @@ import { filesForModel, loadedFile, photosForReport, type FileRef, type LoadedFi
 import { AUTHOR_ID } from './constants'
 import type { ConversationRow } from './conversation-row'
 import { addressOf, markLinked } from './discussed-products'
+import { repairLinks } from './reply-links'
 import { saveDiscussedProducts } from './order-state'
 import {
   addUsage,
@@ -27,16 +28,14 @@ import {
   markTaken,
   releaseTurn,
   setCallbackWanted,
-  setNotGenuineAsks,
 } from './conversations'
-import { saveCallback } from './callbacks'
 import { scheduleHandoverCheck } from './handover'
-import { cannotAnswerLine, notGenuineAskLine } from './lines'
+import { cannotAnswerLine } from './lines'
 import { emailsUsedUp } from './emails'
 import { textingAvailable, textsUsedUp } from './texts'
 import { contextNote, transcriptInput } from './model-input'
 import { checksLocked } from './order-checks'
-import { notGenuineOnFlag, notGenuineStep, type KnownContact } from './not-genuine'
+import { notGenuineOnFlag } from './not-genuine'
 import { runTurn } from './openai'
 import { buildInstructions } from './prompt'
 import { modeAllows } from './routing'
@@ -110,57 +109,22 @@ async function fallBack(conversationId: string, settings: AiChatSettings, online
   await say(conversationId, settings, cannotAnswerLine(online, haveEmail))
 }
 
-/** Flags the chat and says the first of the fixed not-genuine lines, or, when
- *  Live Chat's contact box already holds their email, saves the callback with
- *  it and says a colleague will reply by email (no asking for it). */
-async function flag(conversationId: string, settings: AiChatSettings, reason: string, known: KnownContact): Promise<void> {
-  await enterNotGenuine(conversationId, reason)
-  const step = notGenuineOnFlag(known)
-  if (step.kind === 'save') {
-    await saveCallback({
-      conversationId,
-      name: step.name,
-      email: step.email,
-      about: `The assistant stepped back from this chat (${reason}); the email came from the chat's contact box.`,
-      source: 'not_genuine',
-    })
-    await askForColleague(conversationId)
+/**
+ * A chat that is not a genuine enquiry (lib/not-genuine.ts): the first time,
+ * one calm line and the chat carries on; the second time in the same chat, a
+ * closing line and quiet. No callback and no colleague fetched.
+ */
+async function flag(conversationId: string, settings: AiChatSettings, reason: string, alreadyWarned: boolean): Promise<void> {
+  const step = notGenuineOnFlag(alreadyWarned, settings.businessName)
+  if (step.kind === 'step_back') {
     await enterQuiet(conversationId)
     await say(conversationId, settings, step.reply)
-    await log(conversationId, 'not_genuine', 'email already given; passed to a colleague', true)
+    await log(conversationId, 'not_genuine', 'flagged a second time; stepped back', true)
     return
   }
-  await say(conversationId, settings, step.kind === 'ask' ? step.reply : notGenuineAskLine(1))
-}
-
-function knownContact(chat: ResponderChat): KnownContact {
-  return { name: chat.conversation.visitorName, email: chat.conversation.visitorEmail }
-}
-
-/** A chat already flagged: the fixed lines, by lib/not-genuine.ts's rule. */
-async function notGenuineTurn(conversationId: string, settings: AiChatSettings, row: ConversationRow, text: string, known: KnownContact): Promise<void> {
-  const step = notGenuineStep(row.notGenuineAsks, text, known)
-  if (step.kind === 'save') {
-    await saveCallback({
-      conversationId,
-      name: step.name,
-      email: step.email,
-      about: `The assistant stepped back from this chat (${row.notGenuineReason ?? 'not a genuine enquiry'}) and asked for contact details.`,
-      source: 'not_genuine',
-    })
-    await askForColleague(conversationId)
-    await enterQuiet(conversationId)
-    await say(conversationId, settings, step.reply)
-    await log(conversationId, 'not_genuine', 'details given', true)
-  } else if (step.kind === 'ask') {
-    await setNotGenuineAsks(conversationId, step.asks)
-    await say(conversationId, settings, step.reply)
-    await log(conversationId, 'not_genuine', `asked for details (${step.asks} of 3)`, true)
-  } else {
-    await askForColleague(conversationId)
-    await enterQuiet(conversationId)
-    await log(conversationId, 'not_genuine', 'no details after three asks; stepped back', true)
-  }
+  await enterNotGenuine(conversationId, reason)
+  await say(conversationId, settings, step.reply)
+  await log(conversationId, 'not_genuine', 'flagged; said it is here to help and carried on', true)
 }
 
 /** Reads the files the model is shown this turn. A file that cannot be read
@@ -189,6 +153,18 @@ async function rememberShown(ctx: ToolContext, reply: string): Promise<void> {
   await saveDiscussedProducts(ctx.conversationId, next).catch((err: unknown) => {
     console.error('[ai-agent-for-live-chat] could not remember the products shown', err)
   })
+}
+
+/** Every product address the tools gave this chat, as the model may show it
+ *  (with the delivery chosen for it where there is one). */
+function knownAddresses(ctx: ToolContext): string[] {
+  const out = new Set<string>()
+  for (const entry of [...ctx.shown, ...ctx.products]) {
+    if (entry.url) out.add(entry.url)
+    const shown = addressOf(entry)
+    if (shown) out.add(shown)
+  }
+  return [...out]
 }
 
 /** The model, with its tools, writing the reply. */
@@ -244,6 +220,9 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
         staff: row.staff,
         colleaguesOnline: online,
         callbackWanted: row.callbackWanted,
+        warnedOnce: row.state === 'not_genuine',
+        emailsSent: row.emailsSent,
+        textsSent: row.textsSent,
         verifiedOrders: row.verifiedOrders,
         orderChecksLocked: locked,
         emailsUsedUp: usedUp,
@@ -279,7 +258,7 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
       console.error('[ai-agent-for-live-chat] could not record token use', err)
     })
     if (outcome.kind === 'stopped' || ctx.effects.notGenuine) {
-      await flag(conversationId, settings, ctx.effects.notGenuine ?? 'flagged by the assistant', knownContact(chat))
+      await flag(conversationId, settings, ctx.effects.notGenuine ?? 'flagged by the assistant', row.state === 'not_genuine')
       return
     }
     if (!outcome.text) {
@@ -287,8 +266,9 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
       await fallBack(conversationId, settings, online, !!chat.conversation.visitorEmail)
       return
     }
-    await say(conversationId, settings, outcome.text)
-    await rememberShown(ctx, outcome.text)
+    const reply = repairLinks(outcome.text, knownAddresses(ctx))
+    await say(conversationId, settings, reply)
+    await rememberShown(ctx, reply)
     // The callback has now been offered once; it is not offered again unasked.
     if (row.callbackWanted && !ctx.effects.callbackSaved) {
       await setCallbackWanted(conversationId, false).catch(() => undefined)
@@ -336,16 +316,11 @@ async function oneTurn(conversationId: string): Promise<void> {
     if (!stateAnswers(row.state)) return
 
     const fresh = newVisitorMessages(chat.messages, row)
-    if (row.state === 'not_genuine') {
-      await notGenuineTurn(conversationId, settings, row, fresh.map((m) => m.body).join('\n'), knownContact(chat))
-      return
-    }
-
     const lines = chat.messages.filter((m) => m.sender === 'visitor' && m.id <= upToId)
     const reason = notGenuineReason(lines, new Set(fresh.map((m) => m.id)))
     if (reason) {
       await log(conversationId, 'spam_check', REASON_WORDS[reason], true)
-      await flag(conversationId, settings, REASON_WORDS[reason], knownContact(chat))
+      await flag(conversationId, settings, REASON_WORDS[reason], row.state === 'not_genuine')
       return
     }
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseConversationRow, type ConversationRow } from './conversation-row'
-import { NOT_GENUINE_FIRST } from './lines'
+import { notGenuineFirstLine, notGenuineLastLine } from './lines'
 import { DEFAULT_SETTINGS, type AiChatSettings } from './settings-model'
 
 // The turn runner's moving parts with the database, Live Chat and OpenAI
@@ -150,7 +150,7 @@ describe('a model turn', () => {
     openai.runTurn.mockResolvedValueOnce({ kind: 'stopped', usage: { input: 1, cached: 0, output: 1 }, rounds: 1 })
     await processConversation('c1')
     expect(db.enterNotGenuine).toHaveBeenCalled()
-    expect(posted()).toEqual([NOT_GENUINE_FIRST])
+    expect(posted()).toEqual([notGenuineFirstLine(world.settings!.businessName)])
   })
 })
 
@@ -160,26 +160,26 @@ describe('the free checks and the fixed lines', () => {
     await processConversation('c1')
     expect(openai.runTurn).not.toHaveBeenCalled()
     expect(db.enterNotGenuine).toHaveBeenCalledWith('c1', 'Keyboard-mashing or gibberish')
-    expect(posted()).toEqual([NOT_GENUINE_FIRST])
+    expect(posted()).toEqual([notGenuineFirstLine(world.settings!.businessName)])
   })
 
-  it('in a flagged chat, an email address saves a callback and the assistant steps back', async () => {
+  it('in a flagged chat, a genuine question is answered as normal, with no callback', async () => {
     world.row = { ...world.row!, state: 'not_genuine', notGenuineAsks: 1 }
-    world.messages = [visitor(1, 'fine. Sam, sam@example.com')]
+    world.messages = [visitor(1, 'ok fair. do you sell cable trays?')]
     await processConversation('c1')
-    expect(callbacks.saveCallback).toHaveBeenCalledWith(expect.objectContaining({ email: 'sam@example.com', source: 'not_genuine' }))
-    expect(chat.askForColleague).toHaveBeenCalledWith('c1')
-    expect(db.enterQuiet).toHaveBeenCalledWith('c1')
-    expect(openai.runTurn).not.toHaveBeenCalled()
+    expect(openai.runTurn).toHaveBeenCalled()
+    expect(callbacks.saveCallback).not.toHaveBeenCalled()
+    expect(chat.askForColleague).not.toHaveBeenCalled()
   })
 
-  it('after the third ask goes unanswered, steps back and says nothing', async () => {
-    world.row = { ...world.row!, state: 'not_genuine', notGenuineAsks: 3 }
-    world.messages = [visitor(1, 'no')]
+  it('flagged a second time, it leaves the chat there: quiet, no callback, no colleague', async () => {
+    world.row = { ...world.row!, state: 'not_genuine', notGenuineAsks: 1 }
+    world.messages = [visitor(1, 'asdfasdf jkljkljkl')]
     await processConversation('c1')
     expect(db.enterQuiet).toHaveBeenCalledWith('c1')
-    expect(chat.askForColleague).toHaveBeenCalledWith('c1')
-    expect(posted()).toEqual([])
+    expect(posted()).toEqual([notGenuineLastLine()])
+    expect(callbacks.saveCallback).not.toHaveBeenCalled()
+    expect(chat.askForColleague).not.toHaveBeenCalled()
   })
 })
 

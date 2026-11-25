@@ -388,6 +388,19 @@ export async function contactOnOrder(orderNumber: string): Promise<{ email: stri
   return { email: row.customer_email.trim(), name: row.customer_name?.trim() ?? '' }
 }
 
+/** The name on the newest proved order using this address, for greeting
+ *  whoever a note goes to when it goes to the address on their order. '' for
+ *  none. Restated from the phone assistant (nameOnOrderEmail). */
+export async function nameOnOrderEmail(orderNumbers: readonly string[], email: string): Promise<string> {
+  if (orderNumbers.length === 0) return ''
+  const rows = await prisma.$queryRaw<Array<{ customer_name: string | null }>>(Prisma.sql`
+    SELECT "customer_name" FROM "shp_orders"
+    WHERE "kind" = 'SALE' AND "order_number" IN (${Prisma.join([...orderNumbers])}) AND lower("customer_email") = ${email.trim().toLowerCase()}
+    ORDER BY "created_at" DESC LIMIT 1
+  `)
+  return rows[0]?.customer_name?.trim() ?? ''
+}
+
 /** The phone numbers on proved orders, for texting their customer: the number
  *  chosen for updates first, then the customer's own. Read here and handed to
  *  the text tool only, never to the model. */

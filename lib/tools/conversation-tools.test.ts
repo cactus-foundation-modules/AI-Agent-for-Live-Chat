@@ -76,6 +76,21 @@ describe('save_callback', () => {
     expect(done.summary).not.toContain('sam@example.com')
   })
 
+  it('uses the email already in the chat\'s contact box instead of asking again', async () => {
+    const c = ctx({ visitorText: 'yes please', visitorEmail: 'sam@example.com', visitorName: 'Sam' })
+    const done = await dispatchTool(TOOLS, 'save_callback', '{"visitor_agreed":"yes please","about":"Cable trays"}', c)
+    expect(done.ok).toBe(true)
+    expect(callbacks.saveCallback).toHaveBeenCalledWith({ conversationId: 'c1', name: 'Sam', email: 'sam@example.com', about: 'Cable trays', source: 'tool' })
+    expect(String(done.result.message)).toMatch(/details already on file/)
+  })
+
+  it('asks for an address only when none is on file', async () => {
+    const done = await dispatchTool(TOOLS, 'save_callback', '{"visitor_agreed":"yes please","about":"x"}', ctx({ visitorText: 'yes please' }))
+    expect(done.ok).toBe(false)
+    expect(String(done.result.message)).toMatch(/no email address on file/)
+    expect(callbacks.saveCallback).not.toHaveBeenCalled()
+  })
+
   it('refuses an address that is not one', async () => {
     const done = await dispatchTool(TOOLS, 'save_callback', '{"visitor_agreed":"yes","name":"Sam","email":"sam at example","about":""}', ctx({ visitorText: 'yes' }))
     expect(done.ok).toBe(false)

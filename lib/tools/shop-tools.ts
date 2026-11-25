@@ -17,8 +17,8 @@ import { matchService, serviceMissMessage, timingMenus } from '../shop/delivery-
 import { lookupFaqs } from '../shop/faq-queries'
 import { paymentInfo } from '../shop/payment-queries'
 import { deliveryToPostcode } from '../shop/postcode-delivery'
-import { findBySku, getProductDetail, listTopCategories, searchProducts } from '../shop/product-queries'
-import { productReviews, searchGuides, searchPages, type Passage } from '../shop/site-content'
+import { findBySku, getProductDetail, listTopCategories, searchProducts, variationIdsOf } from '../shop/product-queries'
+import { productReviews, searchGuides, searchPages, shopReviews, type Passage } from '../shop/site-content'
 import { defineTool, type ToolContext, type ToolParameters } from './registry'
 
 // ---------------------------------------------------------------------------
@@ -346,6 +346,25 @@ export const getReviewsTool = defineTool({
   },
 })
 
+export const getShopReviewsTool = defineTool({
+  name: 'get_shop_reviews',
+  description: "What customers say about the shop as a whole: its Google rating and how many reviews it has (with the Google page's address), and every published product review taken together (how many, the average out of five), each with a few short quotes. Use for 'are you any good?', 'do you have good reviews?', 'can I trust you?'.",
+  parameters: NO_ARGS,
+  input: z.object({}).passthrough(),
+  summarise: () => '',
+  async handler() {
+    const digest = await shopReviews()
+    if (!digest || (!digest.google && !digest.products)) {
+      return { ok: false, message: 'This shop has no reviews to show yet. Say so plainly; never invent an opinion. Offer what the product pages say instead.' }
+    }
+    return {
+      ok: true,
+      ...digest,
+      note: 'Give the headline figures (the Google rating and how many reviews, and the product reviews\' average and how many), then paraphrase one short quote if it helps. You may give the Google page\'s address on a line of its own. Never invent or exaggerate.',
+    }
+  },
+})
+
 export const searchGuidesTool = defineTool({
   name: 'search_guides',
   description: "Search the shop's own articles and buying guides for advice, such as 'chair for back pain', 'standing desk height' or 'mesh or fabric'. Returns up to three passages with the article they come from, its address and the links written in each.",
@@ -391,6 +410,25 @@ export const chooseDeliveryTool = defineTool({
       }
     }
     const options = (await timingMenus([entry.id])).get(entry.id) ?? []
+    if (options.length === 0 && entry.parentId === null) {
+      // A listing whose options are not all chosen has no menu of its own:
+      // its variations each carry one. Learned on a live chat, where
+      // "pre-assembled" for a chair with only its colour chosen was refused,
+      // and the visitor told it was not offered when it was.
+      const childIds = await variationIdsOf(entry.id)
+      const menus = await timingMenus(childIds)
+      const offered = [...new Map([...menus.values()].flat().map((option) => [option.key, option])).values()]
+      const found = offered.length > 0 ? matchService(args.service, offered) : null
+      if (found?.kind === 'match') {
+        return {
+          ok: true,
+          recorded: false,
+          delivery: found.option.label,
+          message: `${found.option.label} is offered for this product. It cannot be picked for them until they have chosen the rest of its options, so nothing is recorded: tell them it is available, that they choose it on the product page or at checkout, and quote its price only from get_product.`,
+        }
+      }
+      return { ok: false, message: serviceMissMessage(args.service, found) }
+    }
     const match = options.length > 0 ? matchService(args.service, options) : null
     if (!match || match.kind !== 'match') return { ok: false, message: serviceMissMessage(args.service, match) }
     ctx.products = chooseDelivery(ctx.products, entry.id, { key: match.option.key, label: match.option.label })

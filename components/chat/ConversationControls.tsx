@@ -59,6 +59,7 @@ export const TOOL_WORDS: Record<string, string> = {
   save_quote: 'Saved a quote',
   send_text: 'Texted the visitor',
   choose_delivery: 'Recorded the delivery they chose',
+  get_shop_reviews: 'Read the shop\'s reviews',
   spam_check: 'Spam check',
   not_genuine: 'Not-genuine follow-up',
 }

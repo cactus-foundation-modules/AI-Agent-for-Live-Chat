@@ -18,6 +18,7 @@ import {
   getPaymentInfoTool,
   getProductTool,
   getReviewsTool,
+  getShopReviewsTool,
   listCategoriesTool,
   searchGuidesTool,
   searchPagesTool,
@@ -52,4 +53,5 @@ export const TOOLS: readonly RegisteredTool[] = [
   saveQuoteTool,
   sendTextTool,
   chooseDeliveryTool,
+  getShopReviewsTool,
 ]

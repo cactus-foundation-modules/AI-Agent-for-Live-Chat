@@ -107,6 +107,13 @@ export type ContextFacts = {
   colleaguesOnline: boolean
   /** The visitor is owed an apology and a request for their details. */
   callbackWanted: boolean
+  /** The chat was flagged as not genuine once already, and the visitor told
+   *  the assistant is here to help with the shop. */
+  warnedOnce?: boolean
+  /** Emails and texts already sent from this chat, so the assistant never
+   *  denies one it sent. */
+  emailsSent?: number
+  textsSent?: number
   /** Order numbers the visitor has proved are theirs in this chat. */
   verifiedOrders?: readonly string[]
   /** Order checks have failed too often (this chat, or this visitor this hour). */
@@ -178,6 +185,14 @@ export function contextNote(facts: ContextFacts): string {
     lines.push(`- Delivery chosen in this chat (show each of these products with this address, so its card carries the service): ${chosen.map((choice) => `${choice.label}: ${choice.url}`).join('; ')}.`)
   }
   if (facts.staff) lines.push('- This is a colleague testing you. Answer exactly as you would a visitor.')
+  if (facts.emailsSent || facts.textsSent) {
+    const sent = [
+      facts.emailsSent ? `${facts.emailsSent} email${facts.emailsSent === 1 ? '' : 's'}` : '',
+      facts.textsSent ? `${facts.textsSent} text${facts.textsSent === 1 ? '' : 's'}` : '',
+    ].filter(Boolean).join(' and ')
+    lines.push(`- Already sent from this chat: ${sent}. They went; never say otherwise. If asked about one, it is on its way or has arrived.`)
+  }
+  if (facts.warnedOnce) lines.push('- Earlier in this chat they were told you are here to help with the shop. Help them normally if they now ask something genuine; only if they carry on abusing or wasting time, call flag_not_genuine, which ends your part in the chat.')
   if (facts.callbackWanted) lines.push('- A colleague could not be reached for them earlier. Say sorry once for that and offer, once, to have somebody get back to them by email; save_callback only if they say yes. If they decline or move on, drop it.')
   return lines.join('\n')
 }

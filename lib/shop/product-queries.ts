@@ -1093,3 +1093,16 @@ export async function findBySku(spoken: string): Promise<{ hits: SkuHit[]; note:
     note: `Prices are ${priceBasis(config.taxMode)}. ${close ? 'The code matched only closely (a letter may be wrong), so confirm what the item is by name and options, and let the visitor agree before going on. ' : ''}Give the product name and its options, not the code, and do not write a code out unless the visitor asks. A variation hit already tells you the exact option and price: do not ask which option they want. To show it, put its url on a line of its own. Use its variation id for email_summary and the productId for get_product.`,
   }
 }
+
+/** A few switched-on variations of a listing, for asking what they can be
+ *  bought with when the listing itself has no delivery menu (its variations
+ *  each carry their own). Empty for a product with none. */
+export async function variationIdsOf(listingId: string, limit = 40): Promise<string[]> {
+  if (!(await tableExists('svr_variants'))) return []
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT sv."child_product_id" AS id FROM "svr_variants" sv
+    WHERE sv."product_id" = ${listingId} AND sv."enabled" = true
+    ORDER BY sv."position" LIMIT ${limit}
+  `
+  return rows.map((row) => row.id)
+}

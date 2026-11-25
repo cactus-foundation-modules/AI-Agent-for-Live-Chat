@@ -13,7 +13,9 @@ import type { EmailTemplateDef } from '@/lib/email/registry'
 // The chat note goes when a visitor asks for a written note of what was
 // discussed (product advice, mostly), to an address they typed in the chat or
 // the one on an order they proved. {{summaryHtml}} and {{productsHtml}} are
-// built in code from escaped text and the shop's own product rows.
+// built in code from escaped text and the shop's own product rows, and
+// {{signatureHtml}} from the signature set on this module's Assistant tab (as
+// the phone assistant signs its own notes), escaped or sanitised.
 //
 // {{reportIssueUrl}} is the order link with the issue form already open. It is
 // empty on a shop that has issue reports switched off, which takes its whole
@@ -37,10 +39,10 @@ export const aiAgentForLiveChatEmailTemplates: EmailTemplateDef[] = [
     label: 'Note of what was discussed in the live chat',
     subject: '{{subject}}',
     bodyHtml:
-      '<p>Hi {{customerName}},</p><p>Thanks for chatting with us. As promised, here is a note of what we talked about:</p>{{summaryHtml}}{{#if hasProducts}}<p><strong>The products we mentioned</strong></p>{{productsHtml}}{{/if}}<p>If anything is unclear, just reply to this email.</p>',
-    mergeTags: ['customerName', 'subject', 'summaryHtml', 'productsHtml', 'hasProducts', 'siteName'],
+      '<p>Hi {{customerName}},</p><p>Thanks for chatting with us. As promised, here is a note of what we talked about:</p>{{summaryHtml}}{{#if hasProducts}}<p><strong>The products we mentioned</strong></p>{{productsHtml}}{{/if}}<p>If anything is unclear, just reply to this email.</p>{{signatureHtml}}',
+    mergeTags: ['customerName', 'subject', 'summaryHtml', 'productsHtml', 'hasProducts', 'signatureHtml', 'siteName'],
     requiredTags: ['summaryHtml'],
-    rawTags: ['summaryHtml', 'productsHtml'],
+    rawTags: ['summaryHtml', 'productsHtml', 'signatureHtml'],
     transactional: true,
   },
 ]

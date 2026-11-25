@@ -38,6 +38,8 @@ export const HANDOVER_WAIT_MAX_SECONDS = 1800
 export const ASSISTANT_NAME_MAX = 40
 export const BUSINESS_NAME_MAX = 120
 export const EXTRA_INSTRUCTIONS_MAX = 8000
+/** A signature longer than this is not a signature. */
+export const EMAIL_SIGNATURE_MAX = 4000
 
 export type AiChatSettings = {
   mode: Mode
@@ -45,6 +47,9 @@ export type AiChatSettings = {
   assistantName: string
   businessName: string
   extraInstructions: string
+  /** The assistant's own sign-off on the notes it emails: plain text (new
+   *  lines kept) or pasted HTML. Empty for none. */
+  emailSignature: string
   language: string
   handoverWaitSeconds: number
   model: string
@@ -61,6 +66,7 @@ export const DEFAULT_SETTINGS: AiChatSettings = {
   assistantName: DEFAULT_ASSISTANT_NAME,
   businessName: '',
   extraInstructions: '',
+  emailSignature: '',
   language: 'en',
   handoverWaitSeconds: HANDOVER_WAIT_DEFAULT_SECONDS,
   model: DEFAULT_MODEL,
@@ -114,6 +120,7 @@ export function settingsFromRow(
     assistantName: cleanAssistantName(row?.assistant_name),
     businessName: str(row?.business_name)?.trim() ?? '',
     extraInstructions: str(row?.extra_instructions)?.trim() ?? '',
+    emailSignature: str(row?.email_signature)?.trim() ?? '',
     language: str(row?.language) ?? 'en',
     handoverWaitSeconds: typeof row?.handover_wait_seconds === 'number'
       ? clampHandoverSeconds(row.handover_wait_seconds)

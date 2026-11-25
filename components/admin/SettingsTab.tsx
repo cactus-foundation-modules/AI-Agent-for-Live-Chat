@@ -32,6 +32,7 @@ type State = {
   assistantName: string
   businessName: string
   extraInstructions: string
+  emailSignature: string
   language: string
   handoverWaitSeconds: number
   model: string
@@ -47,6 +48,7 @@ type State = {
   handoverWaitMaxSeconds: number
   assistantNameMax: number
   extraInstructionsMax: number
+  emailSignatureMax: number
 }
 
 type Draft = {
@@ -55,6 +57,7 @@ type Draft = {
   assistantName: string
   businessName: string
   extraInstructions: string
+  emailSignature: string
   language: string
   handoverWaitSeconds: number
   model: string
@@ -81,6 +84,7 @@ function draftOf(state: State): Draft {
     assistantName: state.assistantName,
     businessName: state.businessName,
     extraInstructions: state.extraInstructions,
+    emailSignature: state.emailSignature,
     language: state.language,
     handoverWaitSeconds: state.handoverWaitSeconds,
     model: state.model,
@@ -162,6 +166,7 @@ function AssistantSection() {
       assistantName: draft.assistantName,
       businessName: draft.businessName,
       extraInstructions: draft.extraInstructions,
+      emailSignature: draft.emailSignature,
       language: draft.language,
       handoverWaitSeconds: draft.handoverWaitSeconds,
       model: draft.model,
@@ -173,7 +178,7 @@ function AssistantSection() {
   const clearKey = () => run(async () => ((await patch({ clearOpenaiApiKey: true })) ? 'The saved key is removed.' : null))
 
   const copyFromPhone = () => run(async () => {
-    if (!window.confirm('Copy the phone assistant’s business name, extra instructions, OpenAI key and sending address over the ones here? After this the two are set separately.')) return null
+    if (!window.confirm('Copy the phone assistant’s business name, extra instructions, email signature, OpenAI key and sending address over the ones here? After this the two are set separately.')) return null
     const res = await fetch(COPY_API, { method: 'POST' })
     if (!res.ok) {
       setErr(await readError(res, 'Could not copy the phone assistant’s settings.'))
@@ -275,7 +280,7 @@ function AssistantSection() {
                 Copy from phone assistant
               </button>
               <p className="field-hint">
-                Copies the business name, extra instructions, OpenAI key and sending address from AI Call Answering, once.
+                Copies the business name, extra instructions, email signature, OpenAI key and sending address from AI Call Answering, once.
                 {saved.copiedFromPhoneAt ? ` Last copied ${new Date(saved.copiedFromPhoneAt).toLocaleString('en-GB')}.` : ''}
               </p>
             </div>
@@ -316,6 +321,14 @@ function AssistantSection() {
                 </ul>
               </div>
             )}
+          </div>
+          <div className="field">
+            <label>Email signature</label>
+            <textarea rows={5} maxLength={saved.emailSignatureMax} value={draft.emailSignature} onChange={(e) => set('emailSignature', e.target.value)} />
+            <p className="field-hint">
+              Added to the end of every note of a chat the assistant emails, for example a name, job title and phone
+              number. Plain text (new lines are kept) or pasted HTML. Leave empty for no signature.
+            </p>
           </div>
         </div>
 

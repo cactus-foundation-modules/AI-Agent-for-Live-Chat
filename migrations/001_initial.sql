@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS "aichat_settings" (
     "business_name"            TEXT         NOT NULL DEFAULT '',
     -- Owner's own rules, appended to the built-in instructions.
     "extra_instructions"       TEXT         NOT NULL DEFAULT '',
+    -- The sign-off on the notes the assistant emails (plain text or HTML).
+    "email_signature"          TEXT         NOT NULL DEFAULT '',
     "language"                 TEXT         NOT NULL DEFAULT 'en',
     -- How long a chat handed to a colleague waits for one before the
     -- assistant comes back, apologises and takes a name and email.

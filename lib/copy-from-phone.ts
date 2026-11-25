@@ -6,8 +6,8 @@ import { saveCopiedSettings } from './settings'
 
 // ---------------------------------------------------------------------------
 // "Copy from phone assistant": a site that already set up the AI Call
-// Answering module copies its business name, extra instructions, OpenAI key
-// and sending address across in one go. Once - the two are independent
+// Answering module copies its business name, extra instructions, email
+// signature, OpenAI key and sending address across in one go. Once - the two are independent
 // afterwards, so changing one never changes the other.
 //
 // Nothing of the phone module is imported. Whether it is here is a question
@@ -26,15 +26,17 @@ export async function phoneAssistantInstalled(): Promise<boolean> {
   return rows[0]?.present === true
 }
 
-type PhoneRow = { business_name: unknown; extra_instructions: unknown; openai_api_key_encrypted: unknown }
+type PhoneRow = { business_name: unknown; extra_instructions: unknown; openai_api_key_encrypted: unknown; email_signature: unknown }
 
 export type CopyResult = { copied: true; key: boolean; sender: boolean } | { copied: false; reason: string }
 
 export async function copyFromPhoneAssistant(): Promise<CopyResult> {
   if (!(await phoneAssistantInstalled())) return { copied: false, reason: 'The phone assistant is not installed on this site.' }
+  // to_jsonb, so a phone module old enough to have no signature column reads
+  // as none rather than failing the whole copy.
   const rows = await prisma.$queryRaw<PhoneRow[]>`
-    SELECT "business_name", "extra_instructions", "openai_api_key_encrypted"
-    FROM "acall_settings" WHERE "id" = 'singleton' LIMIT 1
+    SELECT "business_name", "extra_instructions", "openai_api_key_encrypted", to_jsonb(s) ->> 'email_signature' AS "email_signature"
+    FROM "acall_settings" s WHERE "id" = 'singleton' LIMIT 1
   `
   const row = rows[0]
   if (!row) return { copied: false, reason: 'The phone assistant has not been set up yet, so there is nothing to copy.' }
@@ -45,6 +47,7 @@ export async function copyFromPhoneAssistant(): Promise<CopyResult> {
   await saveCopiedSettings({
     businessName: typeof row.business_name === 'string' ? row.business_name : '',
     extraInstructions: typeof row.extra_instructions === 'string' ? row.extra_instructions : '',
+    emailSignature: typeof row.email_signature === 'string' ? row.email_signature : null,
     encryptedKey: key ? encryptSecret(key) : null,
   })
 

@@ -8,7 +8,7 @@ import { fakeContext } from './fake-context'
 
 const timing = vi.hoisted(() => ({ menus: new Map<string, Array<{ key: string; label: string }>>() }))
 const saved = vi.hoisted(() => ({ saveDiscussedProducts: vi.fn(async () => undefined) }))
-const queries = vi.hoisted(() => ({ getProductDetail: vi.fn(), findBySku: vi.fn(), searchProducts: vi.fn(), listTopCategories: vi.fn() }))
+const queries = vi.hoisted(() => ({ getProductDetail: vi.fn(), findBySku: vi.fn(), searchProducts: vi.fn(), listTopCategories: vi.fn(), variationIdsOf: vi.fn(async (): Promise<string[]> => []) }))
 
 vi.mock('../shop/delivery-choice', async (original) => ({
   ...(await original<typeof import('../shop/delivery-choice')>()),
@@ -20,7 +20,7 @@ vi.mock('../shop/product-queries', () => queries)
 vi.mock('../shop/faq-queries', () => ({ lookupFaqs: vi.fn() }))
 vi.mock('../shop/payment-queries', () => ({ paymentInfo: vi.fn() }))
 vi.mock('../shop/postcode-delivery', () => ({ deliveryToPostcode: vi.fn() }))
-vi.mock('../shop/site-content', () => ({ productReviews: vi.fn(), searchGuides: vi.fn(), searchPages: vi.fn() }))
+vi.mock('../shop/site-content', () => ({ productReviews: vi.fn(), searchGuides: vi.fn(), searchPages: vi.fn(), shopReviews: vi.fn() }))
 
 const { chooseDeliveryTool, getProductTool, findBySkuTool } = await import('./shop-tools')
 const { dispatchTool } = await import('./registry')
@@ -63,6 +63,17 @@ describe('choose_delivery', () => {
     expect(done.result).toMatchObject({ ok: false })
     expect(String(done.result.message)).toContain('no delivery choice')
     expect(ctx.products).toEqual([chair])
+  })
+
+  it('says a service its variations offer is available on a part-chosen listing, recording nothing (the live-site yellow chair)', async () => {
+    const eclipse = { id: 'eclipse', url: 'https://shop.test/eclipse?seat=senna-yellow', parentId: null, picks: 'seat.senna-yellow' }
+    queries.variationIdsOf.mockResolvedValueOnce(['eclipse-a', 'eclipse-b'])
+    timing.menus.set('eclipse-b', [{ key: 'pre-assembled', label: 'Pre-Assembled' }])
+    const ctx = fakeContext({ products: [eclipse] })
+    const done = await choose(ctx, 'eclipse', 'pre-assembled')
+    expect(done.result).toMatchObject({ ok: true, recorded: false, delivery: 'Pre-Assembled' })
+    expect(String(done.result.message)).toMatch(/is offered for this product/)
+    expect(ctx.products).toEqual([eclipse])
   })
 
   it('refuses a product this chat never looked up', async () => {

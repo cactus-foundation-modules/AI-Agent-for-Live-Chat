@@ -12,6 +12,7 @@ import {
   EXTRA_INSTRUCTIONS_MAX,
   HANDOVER_WAIT_MAX_SECONDS,
   HANDOVER_WAIT_MIN_SECONDS,
+  EMAIL_SIGNATURE_MAX,
   LANGUAGE_CHOICES,
   MODEL_CHOICES,
 } from '@/modules/ai-agent-for-live-chat/lib/settings-model'
@@ -24,6 +25,7 @@ async function currentState() {
     assistantName: settings.assistantName,
     businessName: settings.businessName,
     extraInstructions: settings.extraInstructions,
+    emailSignature: settings.emailSignature,
     language: settings.language,
     handoverWaitSeconds: settings.handoverWaitSeconds,
     model: settings.model,
@@ -40,6 +42,7 @@ async function currentState() {
     handoverWaitMaxSeconds: HANDOVER_WAIT_MAX_SECONDS,
     assistantNameMax: ASSISTANT_NAME_MAX,
     extraInstructionsMax: EXTRA_INSTRUCTIONS_MAX,
+    emailSignatureMax: EMAIL_SIGNATURE_MAX,
   }
 }
 
@@ -55,6 +58,7 @@ const FIELD_LABELS: Record<string, string> = {
   assistantName: 'Assistant name',
   businessName: 'Business name',
   extraInstructions: 'Extra instructions',
+  emailSignature: 'Email signature',
   language: 'Language',
   handoverWaitSeconds: 'Hand-over wait',
   model: 'Thinking model',
@@ -84,6 +88,7 @@ const Body = z.object({
   assistantName: z.string().trim().min(1).max(ASSISTANT_NAME_MAX).optional(),
   businessName: z.string().trim().max(BUSINESS_NAME_MAX).optional(),
   extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX).optional(),
+  emailSignature: z.string().max(EMAIL_SIGNATURE_MAX).optional(),
   language: z.string().trim().min(1).max(10).optional(),
   handoverWaitSeconds: z.number().int().min(HANDOVER_WAIT_MIN_SECONDS).max(HANDOVER_WAIT_MAX_SECONDS).optional(),
   model: z.string().trim().min(1).max(100).optional(),

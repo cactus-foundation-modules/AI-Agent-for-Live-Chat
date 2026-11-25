@@ -21,11 +21,11 @@ describe('settingsFromRow', () => {
   it('reads every column', () => {
     const copied = new Date('2026-11-20T10:00:00Z')
     const s = settingsFromRow({
-      mode: 'on', ai_first: true, assistant_name: '  Charlie ', business_name: 'Deskwell', extra_instructions: ' Be kind ',
+      mode: 'on', ai_first: true, assistant_name: '  Charlie ', business_name: 'Deskwell', extra_instructions: ' Be kind ', email_signature: ' Charlie\nDeskwell ',
       language: 'cy', handover_wait_seconds: 240, model: 'gpt-6-sol', openai_api_key_encrypted: 'abc', copied_from_phone_at: copied,
     }, decrypt, {})
     expect(s).toEqual({
-      mode: 'on', aiFirst: true, assistantName: 'Charlie', businessName: 'Deskwell', extraInstructions: 'Be kind',
+      mode: 'on', aiFirst: true, assistantName: 'Charlie', businessName: 'Deskwell', extraInstructions: 'Be kind', emailSignature: 'Charlie\nDeskwell',
       language: 'cy', handoverWaitSeconds: 240, model: 'gpt-6-sol', openaiApiKey: 'plain:abc', openaiApiKeyFromEnv: false,
       hasSavedKey: true, copiedFromPhoneAt: copied,
     })

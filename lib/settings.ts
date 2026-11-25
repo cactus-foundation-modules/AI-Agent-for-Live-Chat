@@ -58,6 +58,7 @@ export type SettingsPatch = {
   assistantName?: string
   businessName?: string
   extraInstructions?: string
+  emailSignature?: string
   language?: string
   handoverWaitSeconds?: number
   model?: string
@@ -85,6 +86,9 @@ export async function updateSettings(patch: SettingsPatch): Promise<void> {
     if (patch.extraInstructions !== undefined) {
       await prisma.$executeRaw`UPDATE "aichat_settings" SET "extra_instructions" = ${patch.extraInstructions.trim()} WHERE "id" = 'singleton'`
     }
+    if (patch.emailSignature !== undefined) {
+      await prisma.$executeRaw`UPDATE "aichat_settings" SET "email_signature" = ${patch.emailSignature.trim()} WHERE "id" = 'singleton'`
+    }
     if (patch.language !== undefined) {
       await prisma.$executeRaw`UPDATE "aichat_settings" SET "language" = ${patch.language.trim() || 'en'} WHERE "id" = 'singleton'`
     }
@@ -108,13 +112,14 @@ export async function updateSettings(patch: SettingsPatch): Promise<void> {
 
 /** What "Copy from phone assistant" writes, as one statement so a copy is
  *  never half made. `encryptedKey` null leaves the saved key alone. */
-export async function saveCopiedSettings(input: { businessName: string; extraInstructions: string; encryptedKey: string | null }): Promise<void> {
+export async function saveCopiedSettings(input: { businessName: string; extraInstructions: string; emailSignature: string | null; encryptedKey: string | null }): Promise<void> {
   await ensureRow()
   try {
     await prisma.$executeRaw`
       UPDATE "aichat_settings" SET
         "business_name" = ${input.businessName.trim()},
         "extra_instructions" = ${input.extraInstructions.trim()},
+        "email_signature" = COALESCE(${input.emailSignature?.trim() ?? null}::text, "email_signature"),
         "openai_api_key_encrypted" = COALESCE(${input.encryptedKey}::text, "openai_api_key_encrypted"),
         "copied_from_phone_at" = CURRENT_TIMESTAMP,
         "updated_at" = CURRENT_TIMESTAMP

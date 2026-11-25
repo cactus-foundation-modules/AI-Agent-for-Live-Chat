@@ -1,4 +1,5 @@
 import { escapeHtml } from '@/lib/email/render'
+import { sanitizeEmailHtml } from '@/lib/sanitize'
 import { sendTemplateEmail } from '@/lib/email'
 import { getShopConfigCached } from '@/modules/shop/lib/config'
 import { orderUrlVars } from '@/modules/shop/lib/email'
@@ -11,7 +12,7 @@ import { titleCaseName } from './name-case'
 import { pickVerifiedOrder } from './order-checks'
 import { MAX_EMAILS_PER_CHAT, MAX_EMAILS_PER_VISITOR_PER_HOUR, recentRateEvents, recordEmailSent, visitorKey } from './order-state'
 import { getSettings } from './settings'
-import { contactOnOrder, emailsOnOrders } from './shop/order-queries'
+import { contactOnOrder, emailsOnOrders, nameOnOrderEmail } from './shop/order-queries'
 import { withDeliveryParam } from './shop/product-links'
 import { toProductRefs } from './shop/product-queries'
 import { sendableLinks } from './shop/site-content'
@@ -220,6 +221,29 @@ export type SummaryArgs = {
   linkIds: string[]
 }
 
+/** The note's words as the email prints them: "plus VAT" written the way the
+ *  product list under it writes it, "+ VAT", so one email does not say it two
+ *  ways (learned on a live chat: "why do you write plus VAT in your email?").
+ *  Pure. */
+export function emailWording(text: string): string {
+  return text.replace(/\bplus\s+VAT\b/gi, '+ VAT')
+}
+
+/** The assistant's signature, or '' for none. Plain text is escaped with its
+ *  line breaks kept; a signature pasted as HTML (it starts with a tag) is
+ *  sanitised the way an inbox signature is and used as written. Restated from
+ *  the phone assistant (lib/call-email.ts signatureHtml), so the two sign off
+ *  alike. Pure but for the sanitiser. */
+export function signatureHtml(signature: string | null | undefined): string {
+  const body = (signature ?? '').replace(/\r\n?/g, '\n').trim()
+  if (!body) return ''
+  if (/^<[a-z!]/i.test(body)) {
+    const html = sanitizeEmailHtml(body)
+    return html ? `<div style="margin:24px 0 0;">${html}</div>` : ''
+  }
+  return `<p style="margin:24px 0 0;">${escapeHtml(body).replace(/\n/g, '<br>')}</p>`
+}
+
 export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Promise<ToolResult> {
   if (await emailsUsedUp(ctx)) return USED_UP
   const named = args.orderNumber ? pickVerifiedOrder(ctx.orders.verified, args.orderNumber) : null
@@ -239,7 +263,7 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
   })
   if (recipient.kind === 'refuse') return { ok: false, sent: false, message: recipient.message }
 
-  const summary = args.summary.trim().slice(0, SUMMARY_MAX)
+  const summary = emailWording(args.summary.trim().slice(0, SUMMARY_MAX))
   if (!summary) return { ok: false, message: 'There was nothing to put in the email. Write a short note of what was discussed and try again.' }
 
   const settings = await getSettings()
@@ -258,7 +282,12 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
     resolved = await listFor([])
   }
   const listing = renderProductTable(resolved.map((entry) => linkWithDelivery(entry.choice)))
-  const name = greetingName(args.name, ctx.visitorText, ctx.visitorName) || (recipient.source === 'order' ? namedContact?.name : '') || ''
+  // Sent to the address on a proved order: greeted by the name on that order,
+  // as the phone assistant does, when the visitor gave none in the chat.
+  const orderName = recipient.source === 'order'
+    ? namedContact?.name || await nameOnOrderEmail(ctx.orders.verified, recipient.email).catch(() => '')
+    : ''
+  const name = greetingName(args.name, ctx.visitorText, ctx.visitorName) || orderName || ''
 
   const sent = await sendTemplateEmail(recipient.email, 'ai-agent-for-live-chat.chat-summary', {
     customerName: titleCaseName(name) || 'there',
@@ -266,6 +295,7 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
     summaryHtml: textToHtml(summary) + linksHtml(picked.links),
     productsHtml: listing,
     hasProducts: listing ? 'true' : '',
+    signatureHtml: signatureHtml(settings.emailSignature),
   })
   if (!sent) return SEND_FAILED
   await countEmail(ctx)
