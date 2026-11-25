@@ -1,6 +1,8 @@
 import { emailsUsedUp, countEmail } from './emails'
 import { isPlausibleEmail, visitorWroteEmail } from './contact-text'
+import { chosenDeliveries, type ChosenDelivery } from './discussed-products'
 import { titleCaseName } from './name-case'
+import { basketServiceMenus, type ServiceOption } from './shop/delivery-choice'
 import { quotesAvailable, saveQuote } from './shop/quote-saver'
 import type { ToolContext, ToolResult } from './tools/registry'
 
@@ -18,6 +20,13 @@ import type { ToolContext, ToolResult } from './tools/registry'
 // exact variation ids from get_product, and quantities. The quote module prices
 // them itself, so nothing the model writes sets a price.
 //
+// A line the visitor chose a delivery service for (choose_delivery) is saved
+// with it, the way the phone assistant's basket lines are: the service is
+// written into the line's meta under the field the shop's own basket picker
+// uses (lib/shop/delivery-choice.ts basketServiceMenus), so opening the quote,
+// and checkout from it, start with that service chosen. A service the basket
+// no longer offers for the line is left off and the shop's default applies.
+//
 // It is an email to the visitor, so it needs their yes, goes only to an
 // address they typed in the chat (or gave Live Chat's form, or their
 // account's), and counts against the same limits as every other email.
@@ -26,6 +35,34 @@ import type { ToolContext, ToolResult } from './tools/registry'
 export const MAX_QUOTE_LINES = 100
 
 export type QuoteLine = { productId: string; quantity: number }
+
+type Menus = Map<string, { field: string; options: ServiceOption[] }>
+
+/**
+ * The quote's lines with the delivery service the chat recorded for each one
+ * written into its meta, where the basket offers that service for that line,
+ * and how many chosen services could not be carried. A line nobody chose a
+ * service for goes exactly as it was. Pure: the menus are passed in.
+ */
+export function linesWithDeliveries(
+  lines: readonly QuoteLine[],
+  chosen: ReadonlyMap<string, ChosenDelivery>,
+  menus: Menus,
+): { lines: Array<QuoteLine & { meta?: Record<string, string> }>; missed: string[] } {
+  const missed: string[] = []
+  const out = lines.map((line) => {
+    const plain = { productId: line.productId, quantity: line.quantity }
+    const delivery = chosen.get(line.productId)
+    if (!delivery) return plain
+    const menu = menus.get(line.productId)
+    if (!menu || !menu.options.some((option) => option.key === delivery.key)) {
+      missed.push(delivery.label)
+      return plain
+    }
+    return { ...plain, meta: { [menu.field]: delivery.key } }
+  })
+  return { lines: out, missed }
+}
 
 export async function saveChatQuote(ctx: ToolContext, input: { name: string | null; email: string | null; lines: QuoteLine[] }): Promise<ToolResult> {
   if (!(await quotesAvailable())) {
@@ -45,10 +82,15 @@ export async function saveChatQuote(ctx: ToolContext, input: { name: string | nu
     return { ok: false, message: 'A quote can only go to an email address the visitor has typed in this chat themselves. Ask them to type it.' }
   }
 
+  const lines = input.lines.slice(0, MAX_QUOTE_LINES)
+  const chosen = chosenDeliveries(ctx.products)
+  const wanted = lines.map((line) => line.productId).filter((id) => chosen.has(id))
+  const withDelivery = linesWithDeliveries(lines, chosen, wanted.length > 0 ? await basketServiceMenus(wanted) : new Map())
+
   let saved
   try {
     saved = await saveQuote({
-      lines: input.lines.slice(0, MAX_QUOTE_LINES).map((line) => ({ productId: line.productId, quantity: line.quantity })),
+      lines: withDelivery.lines,
       customerName: name,
       customerEmail: email,
       customerPhone: '',
@@ -73,6 +115,10 @@ export async function saveChatQuote(ctx: ToolContext, input: { name: string | nu
         ? `Saved as quote ${saved.quote.quoteNumber}, and the shop has emailed it to them with a link that opens the basket. Tell them the quote number and to check their junk folder if it does not arrive. Never write the address out.`
         : `Saved as quote ${saved.quote.quoteNumber}, but the shop does not email quotes, so it has NOT been sent. Tell them the quote number and offer a note of the chat by email instead.`,
       dropped,
+      withDelivery.lines.some((line) => line.meta) ? 'The delivery services they chose are on the quote, so it opens with them chosen.' : '',
+      withDelivery.missed.length > 0
+        ? `The delivery they chose (${withDelivery.missed.join(', ')}) could not be put on the quote, so it shows the shop's usual delivery: tell them to pick it again when they check out.`
+        : '',
       'Do not email the quote or its items again by any other means.',
     ].filter(Boolean).join(' '),
   }

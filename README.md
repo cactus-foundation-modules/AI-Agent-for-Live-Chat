@@ -17,6 +17,7 @@ It only ever calls itself a digital assistant, never a person, and its messages 
 - **Steps back from spam.** The same message three or more times, keyboard-mashing, a pile of links, messages faster than anybody could type, abuse or attempts to talk it out of its instructions: it says it is passing the chat to a colleague and asks for a name and email, up to three times, then goes quiet and leaves the chat to you. Fixed wording, so it costs nothing.
 - **Answers questions about any product**: sizes, options, price, stock, specifications, delivery dates option by option, accessories and your FAQs. "Which finishes are in stock?" is answered across every variation that fits.
 - **Recommends products as cards.** Each product it suggests appears in the chat as a card with its picture and price (a chosen variation's own card, so the right one goes in the basket), with "Add to basket", "Add all" for two or more, and "Choose options" for anything that needs a choice first. Nothing is added without a click.
+- **Remembers the delivery they chose.** When a visitor picks a delivery service for a product (pre-assembled, installed, express), from the ones the shop offers for it, the product's card in the chat shows that service with the shop's price, the emailed note prints it under the product, a texted link and a saved quote carry it, and "Add to basket" puts the product in the basket with that service already picked. Prices and dates still come only from the shop.
 - **Checks orders, carefully.** A signed-in customer can ask about the orders on their own account with nothing more to prove. Anybody else gives the delivery postcode plus the order number, the email on the order or the company name, as on the phone. Wrong answers are limited (three a chat, six an hour per visitor), it only talks about the order asked about, and it never shows an email address, a phone number or a street address.
 - **Raises cancellations, returns and damage reports** on a checked order, through the shop's own rules, once it has written back what it will raise and the visitor has said yes. Photos the visitor sent in the chat go straight into a damage report; with none, the shop's confirmation email asks for them.
 - **Reads pictures and PDFs** the visitor sends: a photo of the damage, a screenshot, a floor plan. Anything else is left for a colleague.
@@ -71,6 +72,7 @@ In the order the model is shown them (append new ones at the end: the order is p
 | `raise_order_request` | Raises a cancellation, return or issue report on a checked order, with the chat's photos. |
 | `save_quote` | Saves the chosen products as a quote the shop emails (only with the Quotes module). |
 | `send_text` | Texts a short note with the shop's own links, or a proved order's page, to the visitor's UK mobile (only with a texting module set up). |
+| `choose_delivery` | Records the delivery service the visitor chose for a product looked up in the chat, only one the shop offers for it, and hands back the product's address carrying it. |
 
 ### How order checks work
 
@@ -85,6 +87,16 @@ In the order the model is shown them (append new ones at the end: the order is p
 ### Products a chat was about
 
 `get_product` (when one variation matches exactly, that variation; otherwise the product) and `find_by_sku` (its one hit) remember what they found on the chat, newest last, ten at most (`aichat_conversations.discussed_products`, `lib/discussed-products.ts`). A search's results are not remembered. `email_summary` lists the products the model passes, swapping a listing for the variation the chat settled on, and when it passes none (or none the shop can show) it lists the remembered ones, newest first. `send_text` links only remembered products, whose page addresses the tools built.
+
+### Delivery choices travel with the product
+
+`choose_delivery` matches the visitor's words (the service's name as `get_product` gave it, or its key) against the services the shop publishes for that exact product or variation at `shop.product-delivery-timing` (`lib/shop/delivery-choice.ts`, copied from the phone assistant). Anything else is refused with what is on offer, and a product the chat has not looked up is refused too. The choice is kept on the product's entry in `discussed_products` (`delivery: { key, label }`, no new column; older rows simply have none), and a new choice replaces the old one. From then on:
+
+- every address the product tools hand back for it carries `delivery-service=<key>`, and so does the end-of-turn note, so the card Live Chat draws shows the service with the shop's price (Live Chat checks it is still offered);
+- `email_summary` passes the key on each product to the unified inbox, which prints the service under the product with today's price and leaves it off if it is no longer offered; the product's link carries it too;
+- `send_text` links carry it;
+- `save_quote` writes it into the line's meta under the field the shop's own basket picker uses (asked through shop's cart-line resolution), so the quote and checkout open with it chosen;
+- "Add to basket" and "Add all" under the card add it with the service picked. Live Chat (0.1.29 onwards) hands the card's buttons `delivery: { key, label, price }` once it has checked the shop still offers the service; on the click the button asks `GET /api/m/ai-agent-for-live-chat/public/basket-line?product=<id>&service=<key>` once (`app/api/public/basket-line/route.ts`, `lib/basket-line.ts`), which answers the line meta through the same cart-line resolution `save_quote` uses, or `{ meta: null }` where the service is not offered. The route is public, `no-store`, and returns nothing per-visitor: it is the menu the shop's own basket shows anyone. The button then calls the shop's `addToCart(id, 1, { meta })` (`lib/basket-add.ts`). With no key (an older Live Chat sends none), a `null` meta or any failure or slow answer, the product goes in without the service, never not at all.
 
 ### Photos in a damage report
 

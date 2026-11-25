@@ -13,6 +13,10 @@ import { productUrl, type ProductUrlStyle } from '@/modules/shop/lib/product-url
 // is how Live Chat works out the exact variation, so the card's Add to basket
 // adds exactly what was recommended.
 //
+// Once the visitor has chosen a delivery service for a product, its address
+// also carries `delivery-service=<key>` (withDeliveryParam), which Live Chat
+// reads to draw that service, priced by the shop, on the card.
+//
 // The address is a site-relative path made absolute with the site's own URL.
 // Without one (a site that has not set SITE_URL) there is no address to give,
 // and the model is simply told the product's name.
@@ -55,6 +59,27 @@ export function productPage(base: PageBase, slug: string | null | undefined, pic
 export function pageBase(style: ProductUrlStyle): PageBase {
   const siteUrl = getSiteUrlOrNull()
   return siteUrl ? { siteUrl, style } : null
+}
+
+/** The query parameter a product address carries a chosen delivery service in.
+ *  Restated from the unified inbox (lib/products/render.ts), which puts it on a
+ *  product it sends with a delivery chosen, and which Live Chat reads to draw
+ *  the delivery line on a product card (modules/chat/lib/products.ts). Neither
+ *  is imported: the name is the contract. */
+export const DELIVERY_PARAM = 'delivery-service'
+
+/** A product address with the chosen delivery service on it, the variation's
+ *  picks left exactly as they were. A null address stays null; one that does
+ *  not parse is handed back as it was. Pure. */
+export function withDeliveryParam(url: string | null, key: string | null | undefined): string | null {
+  if (!url || !key) return url
+  try {
+    const parsed = new URL(url)
+    parsed.searchParams.set(DELIVERY_PARAM, key)
+    return parsed.toString()
+  } catch {
+    return url
+  }
 }
 
 /** Reads a [name, slug] list as Postgres json_agg hands it back. Anything

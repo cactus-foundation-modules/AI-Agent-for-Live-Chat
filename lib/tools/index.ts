@@ -12,6 +12,7 @@ import {
 import type { RegisteredTool } from './registry'
 import {
   checkDeliveryPostcodeTool,
+  chooseDeliveryTool,
   findBySkuTool,
   getFaqsTool,
   getPaymentInfoTool,
@@ -50,4 +51,5 @@ export const TOOLS: readonly RegisteredTool[] = [
   raiseOrderRequestTool,
   saveQuoteTool,
   sendTextTool,
+  chooseDeliveryTool,
 ]

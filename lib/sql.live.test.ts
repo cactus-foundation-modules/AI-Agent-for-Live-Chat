@@ -380,7 +380,8 @@ suite('ai-agent-for-live-chat SQL, against a real Postgres', () => {
 
     const list = [
       { id: 'chair', url: 'https://shop.test/shop/products/chair', parentId: null },
-      { id: 'desk-black', url: 'https://shop.test/shop/products/air-lite-desk?frame-colour=black', parentId: 'desk' },
+      // A chosen delivery service rides in the same JSONB, no column of its own.
+      { id: 'desk-black', url: 'https://shop.test/shop/products/air-lite-desk?frame-colour=black', parentId: 'desk', delivery: { key: 'express', label: 'Express' } },
     ]
     await orderState.saveDiscussedProducts('c-orders', list)
     expect((await conversations.getConversationState('c-orders'))?.discussedProducts).toEqual(list)

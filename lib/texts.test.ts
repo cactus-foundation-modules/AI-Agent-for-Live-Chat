@@ -39,6 +39,12 @@ describe('send_text', () => {
     expect(ctx.textsSent).toBe(1)
   })
 
+  it('links a product with the delivery service the visitor chose', async () => {
+    const chosen = { ...desk, delivery: { key: 'express', label: 'Express' } }
+    await sendChatText(fakeContext({ visitorPhone: '+447700900456', products: [chosen] }), summary)
+    expect(sms.provider?.sendSms).toHaveBeenCalledWith('+447700900456', expect.stringContaining(`${desk.url}&delivery-service=express`))
+  })
+
   it('uses the number given to the chat\'s contact box', async () => {
     const out = await sendChatText(fakeContext({ visitorPhone: '+447700900456', products: [desk] }), summary)
     expect(out).toMatchObject({ ok: true })

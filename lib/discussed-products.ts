@@ -1,3 +1,5 @@
+import { withDeliveryParam } from './shop/product-links'
+
 // ---------------------------------------------------------------------------
 // The products a chat has actually been about, kept on the chat
 // (aichat_conversations.discussed_products) so a note or a text sent later can
@@ -16,6 +18,16 @@
 // specific wins. Only what the tools returned can be recorded, so nothing the
 // model makes up can reach an email or a text this way.
 //
+// The delivery service the visitor chose for a product (choose_delivery) is
+// kept on its entry too, by the shop's own key and name, so the product's
+// address can carry it (Live Chat then draws it on the card), the note prints
+// it under the product, a text's link carries it and a quote line is saved
+// with it. Rows saved before this was added simply have none, and read as
+// they always did. Only a key the shop offered for that product is ever
+// recorded (lib/shop/delivery-choice.ts), and the card, the note and the
+// quote each ask the shop again, so a service since withdrawn quietly drops
+// off them.
+//
 // Pure: the saving is lib/order-state.ts saveDiscussedProducts.
 // ---------------------------------------------------------------------------
 
@@ -31,7 +43,15 @@ export type DiscussedProduct = {
   /** For a variation, its listing's id: a later call naming the listing means
    *  this variation. Null for a product. */
   parentId: string | null
+  /** The delivery service the visitor chose for it: the shop's key for it
+   *  (`express`) and its name as the shop gives it. Absent when none was. */
+  delivery?: ChosenDelivery
 }
+
+export type ChosenDelivery = { key: string; label: string }
+
+/** The shape of a service key, as Live Chat and the unified inbox accept one. */
+const DELIVERY_KEY = /^[A-Za-z0-9][A-Za-z0-9_-]{0,59}$/
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
@@ -47,25 +67,75 @@ export function parseDiscussedProducts(value: unknown): DiscussedProduct[] {
     const record = item as Record<string, unknown>
     const id = text(record.id)
     if (!id) continue
-    entries.push({ id, url: text(record.url), parentId: text(record.parentId) })
+    const delivery = parseDelivery(record.delivery)
+    entries.push({ id, url: text(record.url), parentId: text(record.parentId), ...(delivery ? { delivery } : {}) })
   }
   return rememberProducts([], entries)
 }
 
+/** A stored delivery choice, or null for anything that is not one. */
+function parseDelivery(value: unknown): ChosenDelivery | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const key = text(record.key)
+  const label = text(record.label)
+  return key && label && DELIVERY_KEY.test(key) ? { key, label } : null
+}
+
 /** The list with `found` added at the end: a product already there moves to
- *  the end (keeping the newest address), a variation replaces its own
- *  listing, a listing read again after one of its variations was chosen
- *  brings that variation to the end instead, and only the newest
- *  MAX_DISCUSSED_PRODUCTS are kept. */
+ *  the end (keeping the newest address and the delivery chosen for it), a
+ *  variation replaces its own listing, a listing read again after one of its
+ *  variations was chosen brings that variation to the end instead, and only
+ *  the newest MAX_DISCUSSED_PRODUCTS are kept. A listing's delivery is not
+ *  handed to its variation: the services can differ, and the choice is made
+ *  again for what was chosen. */
 export function rememberProducts(list: readonly DiscussedProduct[], found: readonly DiscussedProduct[]): DiscussedProduct[] {
   let out = [...list]
   for (const entry of found) {
     const chosen = entry.parentId === null ? [...out].reverse().find((kept) => kept.parentId === entry.id) : undefined
-    const newest = chosen ?? entry
+    const same = out.find((kept) => kept.id === entry.id)
+    const delivery = entry.delivery ?? same?.delivery
+    const newest = chosen ?? (delivery ? { ...entry, delivery } : entry)
     out = out.filter((kept) => kept.id !== newest.id && kept.id !== newest.parentId)
     out.push(newest)
   }
   return out.slice(-MAX_DISCUSSED_PRODUCTS)
+}
+
+/** The entry a product id means in this chat: the product itself, or for a
+ *  listing whose variation the chat settled on, that variation (the newest).
+ *  Undefined when the chat has not looked it up. Pure. */
+export function recordedEntry(list: readonly DiscussedProduct[], id: string): DiscussedProduct | undefined {
+  const wanted = id.trim()
+  if (!wanted) return undefined
+  return list.find((entry) => entry.id === wanted) ?? [...list].reverse().find((entry) => entry.parentId === wanted)
+}
+
+/** The list with `delivery` recorded on the entry `id` names (replacing any
+ *  earlier choice for it), moved to the end as the newest. A list without that
+ *  entry comes back as it was. Pure. */
+export function chooseDelivery(list: readonly DiscussedProduct[], id: string, delivery: ChosenDelivery): DiscussedProduct[] {
+  const entry = list.find((kept) => kept.id === id)
+  if (!entry) return [...list]
+  return [...list.filter((kept) => kept.id !== id), { ...entry, delivery: { key: delivery.key, label: delivery.label } }]
+}
+
+/** An entry's page address, carrying its chosen delivery service when it has
+ *  one, as the model should show it. Pure. */
+export function addressOf(entry: Pick<DiscussedProduct, 'url' | 'delivery'>): string | null {
+  return withDeliveryParam(entry.url, entry.delivery?.key)
+}
+
+/** A product address the tools are about to hand the model, with the delivery
+ *  the chat chose for that exact product or variation on it. Pure. */
+export function addressWithChoice(id: string, url: string | null, list: readonly DiscussedProduct[]): string | null {
+  const delivery = list.find((entry) => entry.id === id)?.delivery
+  return withDeliveryParam(url, delivery?.key)
+}
+
+/** The delivery chosen for each product id the chat recorded one for. Pure. */
+export function chosenDeliveries(list: readonly DiscussedProduct[]): Map<string, ChosenDelivery> {
+  return new Map(list.flatMap((entry) => (entry.delivery ? [[entry.id, entry.delivery] as const] : [])))
 }
 
 /** What get_product found, as the shapes the tool hands the model: the one
@@ -112,13 +182,13 @@ export function productsToSend(given: readonly string[], recorded: readonly Disc
 }
 
 /** The page addresses for a text: only products the chat recorded (whose
- *  addresses the tools built), the ones named when any are, else the newest.
- *  Pure. */
+ *  addresses the tools built), the ones named when any are, else the newest,
+ *  each carrying the delivery chosen for it. Pure. */
 export function productLinksToSend(given: readonly string[], recorded: readonly DiscussedProduct[], max: number): string[] {
   const byId = new Map(recorded.map((entry) => [entry.id, entry]))
   const named = productsToSend(given, recorded, recorded.length + given.length)
     .map((id) => byId.get(id))
     .filter((entry): entry is DiscussedProduct => !!entry)
   const pool = named.length > 0 ? named : [...recorded].reverse()
-  return [...new Set(pool.map((entry) => entry.url).filter((url): url is string => !!url))].slice(0, Math.max(0, max))
+  return [...new Set(pool.map(addressOf).filter((url): url is string => !!url))].slice(0, Math.max(0, max))
 }

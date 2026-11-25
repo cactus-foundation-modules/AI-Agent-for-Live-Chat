@@ -27,7 +27,7 @@ vi.mock('./shop/site-content', () => ({ sendableLinks: async () => new Map() }))
 vi.mock('./settings', () => ({ getSettings: async () => ({ extraInstructions: '' }) }))
 vi.mock('./order-state', async (original) => ({ ...(await original<typeof import('./order-state')>()), ...state }))
 
-const { emailChatSummary, emailOrderLink, notAgreedResult, pickSummaryRecipient, visitorAgreement } = await import('./emails')
+const { emailChatSummary, emailOrderLink, linkWithDelivery, notAgreedResult, pickSummaryRecipient, visitorAgreement, withChosenDeliveries } = await import('./emails')
 
 const base = {
   given: null, orderNumber: null, verified: [] as string[], orderEmails: [] as string[], namedOrderEmail: null,
@@ -164,5 +164,35 @@ describe('emailChatSummary lists the products the chat was about', () => {
     queries.contactOnOrder.mockResolvedValue({ email: 'owner@example.com', name: 'JO BLOGGS' })
     await emailOrderLink(fakeContext({ orders: { verified: ['DW1'], failedChecks: 0, emailsSent: 0 } }), null)
     expect(vars().customerName).toBe('Jo Bloggs')
+  })
+})
+
+describe('the note carries the delivery service the visitor chose', () => {
+  const express = { key: 'express', label: 'Express' }
+  const deskBlack = { id: 'desk-black', url: 'https://shop.test/desk?colour=black', parentId: 'desk', delivery: express }
+  const chair = { id: 'chair', url: 'https://shop.test/chair', parentId: null }
+
+  it('hands the inbox each product\'s chosen service by its key, and nothing for the rest', () => {
+    const refs = [{ moduleName: 'shop', kind: 'variation' as const, id: 'desk-black' }, { moduleName: 'shop', kind: 'product' as const, id: 'chair' }]
+    expect(withChosenDeliveries(refs, [chair, deskBlack])).toEqual([{ ...refs[0], delivery: 'express' }, refs[1]])
+  })
+
+  it('passes the service to the inbox when the email goes, swapping a listing for its chosen variation', async () => {
+    await emailChatSummary(fakeContext({ visitorText: 'jo@example.com', products: [chair, deskBlack] }), {
+      email: 'jo@example.com', orderNumber: null, name: null, subject: undefined, summary: 'Desks.', productIds: ['desk', 'chair'], linkIds: [],
+    })
+    expect(products.resolveProducts).toHaveBeenCalledWith([
+      { moduleName: 'shop', kind: 'product', id: 'desk-black', delivery: 'express' },
+      { moduleName: 'shop', kind: 'product', id: 'chair' },
+    ])
+  })
+
+  it('links a product with its service chosen only where the shop still prices it', () => {
+    const base = { moduleName: 'shop', kind: 'product' as const, id: 'desk-black', name: 'Desk', options: null, url: 'https://shop.test/desk?colour=black' }
+    const priced = { ...base, delivery: 'express', deliveryQuote: { key: 'express', label: 'Express', description: null, price: '£25.00', priceSuffix: '+ VAT' } }
+    const gone = { ...base, delivery: 'express', deliveryQuote: null }
+    expect(linkWithDelivery(priced as never).url).toBe('https://shop.test/desk?colour=black&delivery-service=express')
+    expect(linkWithDelivery(gone as never).url).toBe(base.url)
+    expect(linkWithDelivery(base as never).url).toBe(base.url)
   })
 })

@@ -10,6 +10,7 @@ import {
 import { filesForModel, loadedFile, photosForReport, type FileRef, type LoadedFile } from './attachments'
 import { AUTHOR_ID } from './constants'
 import type { ConversationRow } from './conversation-row'
+import { addressOf } from './discussed-products'
 import {
   addUsage,
   appendToolLog,
@@ -213,6 +214,7 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
         emailsUsedUp: usedUp,
         textingAvailable: canText,
         textsUsedUp: textsGone,
+        deliveryChoices: row.discussedProducts.flatMap((entry) => (entry.delivery ? [{ label: entry.delivery.label, url: addressOf(entry) }] : [])),
       }),
     },
   ]

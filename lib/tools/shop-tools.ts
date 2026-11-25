@@ -1,6 +1,16 @@
 import { z } from 'zod'
-import { fromProductDetail, fromSkuHits, rememberProducts, type DiscussedProduct } from '../discussed-products'
+import {
+  addressOf,
+  addressWithChoice,
+  chooseDelivery,
+  fromProductDetail,
+  fromSkuHits,
+  recordedEntry,
+  rememberProducts,
+  type DiscussedProduct,
+} from '../discussed-products'
 import { saveDiscussedProducts } from '../order-state'
+import { matchService, serviceMissMessage, timingMenus } from '../shop/delivery-choice'
 import { lookupFaqs } from '../shop/faq-queries'
 import { paymentInfo } from '../shop/payment-queries'
 import { deliveryToPostcode } from '../shop/postcode-delivery'
@@ -22,7 +32,11 @@ import { defineTool, type ToolContext, type ToolParameters } from './registry'
 // Read only, but for one note: the product a visitor settles on (get_product's
 // exact variation, a product code's hit) is remembered on the chat
 // (lib/discussed-products.ts), so a note or a text sent later can list it even
-// when the model forgets to. Nothing here touches anybody's details.
+// when the model forgets to, and so is the delivery service they choose for it
+// (choose_delivery), checked against the services the shop offers that
+// product. Once one is chosen, every address the tools hand back for that
+// product carries it, so the card shows it. Nothing here touches anybody's
+// details.
 // ---------------------------------------------------------------------------
 
 function text(description: string): Record<string, unknown> {
@@ -77,9 +91,9 @@ export const searchProductsTool = defineTool({
     max_price: z.number().positive().max(1_000_000).optional(),
   }),
   guidance: 'If search_products finds nothing, search again with a different word for the same thing (shorter, a synonym, another spelling) before saying the shop does not sell it.',
-  async handler(_ctx, args) {
+  async handler(ctx, args) {
     const { products, note } = await searchProducts(args.query, args.max_price ?? null)
-    return { ok: true, products, note }
+    return { ok: true, products: products.map((product) => ({ ...product, url: addressWithChoice(product.id, product.url, ctx.products) })), note }
   },
 })
 
@@ -96,7 +110,8 @@ export const findBySkuTool = defineTool({
   async handler(ctx, args) {
     const { hits, note } = await findBySku(args.sku)
     await remember(ctx, fromSkuHits(hits))
-    return { ok: true, products: hits, note }
+    const products = hits.map((hit) => ({ ...hit, url: addressWithChoice(hit.variation?.id ?? hit.productId, hit.url, ctx.products) }))
+    return { ok: true, products, note }
   },
 })
 
@@ -121,8 +136,14 @@ export const getProductTool = defineTool({
   guidance: 'When they name an option, call get_product with it in options and quote that variation\'s exact price; quote a range only while they have not chosen. When they give a quantity, pass it and use quantityQuote: never do the sum yourself.',
   async handler(ctx, args) {
     const detail = await getProductDetail(args.product_id, blankToNull(args.options), args.quantity ?? null)
-    if (detail) await remember(ctx, fromProductDetail(detail))
-    return detail ? { ok: true, product: detail } : { ok: false, message: 'That product could not be found. Search again.' }
+    if (!detail) return { ok: false, message: 'That product could not be found. Search again.' }
+    await remember(ctx, fromProductDetail(detail))
+    const product = {
+      ...detail,
+      url: addressWithChoice(detail.id, detail.url, ctx.products),
+      matchingVariations: detail.matchingVariations?.map((variation) => ({ ...variation, url: addressWithChoice(variation.id, variation.url, ctx.products) })) ?? null,
+    }
+    return { ok: true, product }
   },
 })
 
@@ -255,5 +276,53 @@ export const searchGuidesTool = defineTool({
     return passages.length > 0
       ? { ok: true, passages: passages.map(writtenPassage), note: `Give the gist in a sentence or two, as the shop's own advice ("our guide on mesh chairs says..."), then suggest products if it fits. ${LINKS_NOTE}` }
       : { ok: false, message: 'The shop has no article on that. Answer from the products instead, or say you cannot see it.' }
+  },
+})
+
+export const chooseDeliveryTool = defineTool({
+  name: 'choose_delivery',
+  description: "Record the delivery service the visitor has chosen for a product (for example pre-assembled, installed or express), once they pick one. Pass the exact variation id where they chose one (from matchingVariations or find_by_sku; the product's own id otherwise), looked up with get_product in this chat, and the service's name exactly as get_product listed it under delivery. Only a service the shop offers for that product is accepted. Returns the product's url carrying the service: show that url, on a line of its own, and the card shows the service with the shop's price. A note, a text or a quote sent later carries it too.",
+  parameters: {
+    type: 'object',
+    properties: {
+      product_id: text('The exact variation id, or the product id for a product with no options, as get_product or find_by_sku returned it.'),
+      service: text('The delivery service they chose, by its name exactly as get_product listed it (for example "Express"), or its key.'),
+    },
+    required: ['product_id', 'service'],
+    additionalProperties: false,
+  },
+  input: z.object({
+    product_id: z.string().trim().min(1).max(100),
+    service: z.string().trim().min(1).max(120),
+  }),
+  summarise: (args, result) => `${args.service.slice(0, 60)}: ${result?.ok === true ? 'recorded' : 'not recorded'}`,
+  guidance: 'When the visitor picks a delivery service for a product (pre-assembled, installed, express), call choose_delivery with that product or its chosen variation and the service\'s name as get_product gave it, then show the url it returns. Never record a service they did not choose, and never invent a service, a price or a date: those still come only from get_product or check_delivery_postcode.',
+  async handler(ctx, args) {
+    const entry = recordedEntry(ctx.products, args.product_id)
+    if (!entry) {
+      return {
+        ok: false,
+        message: 'That product has not been looked up in this chat. Nothing was recorded. Call get_product for it first (with the options they chose), then call choose_delivery with the id it returned.',
+      }
+    }
+    const options = (await timingMenus([entry.id])).get(entry.id) ?? []
+    const match = options.length > 0 ? matchService(args.service, options) : null
+    if (!match || match.kind !== 'match') return { ok: false, message: serviceMissMessage(args.service, match) }
+    ctx.products = chooseDelivery(ctx.products, entry.id, { key: match.option.key, label: match.option.label })
+    await saveDiscussedProducts(ctx.conversationId, ctx.products).catch((err: unknown) => {
+      console.error('[ai-agent-for-live-chat] could not remember the delivery chosen', err)
+    })
+    const url = addressOf({ url: entry.url, delivery: { key: match.option.key, label: match.option.label } })
+    return {
+      ok: true,
+      productId: entry.id,
+      delivery: match.option.label,
+      url,
+      message: [
+        `Recorded ${match.option.label} for this product.`,
+        url ? 'Show the product with this url, on a line of its own, and its card shows the service with the shop\'s price.' : '',
+        'A note, a text or a quote sent from now on carries it. Quote its price and date only from get_product or check_delivery_postcode.',
+      ].filter(Boolean).join(' '),
+    }
   },
 })

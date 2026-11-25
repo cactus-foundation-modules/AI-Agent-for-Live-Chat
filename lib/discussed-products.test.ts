@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_DISCUSSED_PRODUCTS,
+  addressOf,
+  addressWithChoice,
+  chooseDelivery,
+  chosenDeliveries,
   fromProductDetail,
   fromSkuHits,
   parseDiscussedProducts,
   productLinksToSend,
   productsToSend,
+  recordedEntry,
   rememberProducts,
   type DiscussedProduct,
 } from './discussed-products'
@@ -92,5 +97,59 @@ describe('productLinksToSend', () => {
   it('falls back to the newest recorded when none named are known', () => {
     expect(productLinksToSend(['invented'], [chair, deskBlack], 3)).toEqual([deskBlack.url, chair.url])
     expect(productLinksToSend([], [chair, deskBlack, { id: 'x', url: null, parentId: null }], 1)).toEqual([deskBlack.url])
+  })
+})
+
+describe('a chosen delivery service', () => {
+  const express = { key: 'express', label: 'Express' }
+  const installed = { key: 'installed', label: 'Delivered and installed' }
+
+  it('reads rows saved before deliveries were kept exactly as before', () => {
+    const old = [{ id: 'desk-black', url: deskBlack.url, parentId: 'desk' }, { id: 'chair', url: chair.url, parentId: null }]
+    expect(parseDiscussedProducts(old)).toEqual([deskBlack, chair])
+    expect(parseDiscussedProducts(old)[0]).not.toHaveProperty('delivery')
+  })
+
+  it('reads a stored choice back, and drops one that is not a real key and name', () => {
+    expect(parseDiscussedProducts([{ ...deskBlack, delivery: express }])).toEqual([{ ...deskBlack, delivery: express }])
+    expect(parseDiscussedProducts([{ ...deskBlack, delivery: { key: 'bad key!', label: 'Express' } }])).toEqual([deskBlack])
+    expect(parseDiscussedProducts([{ ...deskBlack, delivery: { key: 'express' } }])).toEqual([deskBlack])
+    expect(parseDiscussedProducts([{ ...deskBlack, delivery: 'express' }])).toEqual([deskBlack])
+  })
+
+  it('is recorded on the entry, which becomes the newest, and a new choice replaces it', () => {
+    const once = chooseDelivery([deskBlack, chair], 'desk-black', express)
+    expect(once).toEqual([chair, { ...deskBlack, delivery: express }])
+    const twice = chooseDelivery(once, 'desk-black', installed)
+    expect(twice).toEqual([chair, { ...deskBlack, delivery: installed }])
+  })
+
+  it('is not recorded for a product the chat never looked up', () => {
+    expect(chooseDelivery([chair], 'invented', express)).toEqual([chair])
+  })
+
+  it('survives the product being looked up again, but is not handed from a listing to its variation', () => {
+    const chosen = chooseDelivery([desk, chair], 'desk', express)
+    expect(rememberProducts(chosen, [desk])).toEqual([chair, { ...desk, delivery: express }])
+    expect(rememberProducts(chosen, [deskBlack])).toEqual([chair, deskBlack])
+    const variation = chooseDelivery([deskBlack], 'desk-black', express)
+    expect(rememberProducts(variation, [desk])).toEqual([{ ...deskBlack, delivery: express }])
+  })
+
+  it('finds the entry a product id means: itself, or the variation the chat settled on', () => {
+    expect(recordedEntry([deskBlack, chair], 'chair')).toBe(chair)
+    expect(recordedEntry([deskBlack, chair], 'desk')).toBe(deskBlack)
+    expect(recordedEntry([deskBlack, chair], 'invented')).toBeUndefined()
+    expect(recordedEntry([deskBlack], ' ')).toBeUndefined()
+  })
+
+  it('puts the service on the address, the options kept, and on a text\'s links', () => {
+    const chosen = chooseDelivery([chair, deskBlack], 'desk-black', express)
+    expect(addressOf(chosen[1]!)).toBe('https://shop.test/desk?colour=black&delivery-service=express')
+    expect(addressOf(chair)).toBe(chair.url)
+    expect(addressWithChoice('desk-black', deskBlack.url, chosen)).toBe('https://shop.test/desk?colour=black&delivery-service=express')
+    expect(addressWithChoice('desk', desk.url, chosen)).toBe(desk.url)
+    expect(productLinksToSend([], chosen, 3)).toEqual(['https://shop.test/desk?colour=black&delivery-service=express', chair.url])
+    expect(chosenDeliveries(chosen)).toEqual(new Map([['desk-black', express]]))
   })
 })

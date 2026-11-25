@@ -60,6 +60,18 @@ describe('contextNote', () => {
     expect(note).toContain('owed a callback')
   })
 
+  it('lists the delivery services chosen in this chat with the addresses carrying them', () => {
+    const facts = {
+      now, startedOn: null, currentPath: null, currentTitle: null, basket: null, basketTotal: null,
+      signedIn: false, visitorName: null, visitorEmail: null, staff: false, colleaguesOnline: true, callbackWanted: false,
+    }
+    const note = contextNote({ ...facts, deliveryChoices: [{ label: 'Express', url: 'https://shop.test/desk?delivery-service=express' }, { label: 'Installed', url: null }] })
+    expect(note).toContain('Delivery chosen in this chat')
+    expect(note).toContain('Express: https://shop.test/desk?delivery-service=express')
+    expect(note).not.toContain('Installed')
+    expect(contextNote(facts)).not.toContain('Delivery chosen')
+  })
+
   it('reads UK time, summer and winter', () => {
     expect(londonDateTime(new Date('2026-07-01T12:00:00Z'))).toContain('13:00')
     expect(londonDateTime(new Date('2026-12-01T12:00:00Z'))).toContain('12:00')

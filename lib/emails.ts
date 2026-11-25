@@ -4,14 +4,15 @@ import { getShopConfigCached } from '@/modules/shop/lib/config'
 import { orderUrlVars } from '@/modules/shop/lib/email'
 import { orderTrackingUrl } from '@/modules/shop/lib/order-tracking'
 import { renderProductTable } from '@/modules/unified-inbox/lib/products/render'
-import { resolveProducts } from '@/modules/unified-inbox/lib/products'
+import { resolveProducts, type ProductChoice, type ProductRef } from '@/modules/unified-inbox/lib/products'
 import { isPlausibleEmail, visitorWroteEmail } from './contact-text'
-import { productsToSend } from './discussed-products'
+import { chosenDeliveries, productsToSend, type DiscussedProduct } from './discussed-products'
 import { titleCaseName } from './name-case'
 import { pickVerifiedOrder } from './order-checks'
 import { MAX_EMAILS_PER_CHAT, MAX_EMAILS_PER_VISITOR_PER_HOUR, recentRateEvents, recordEmailSent, visitorKey } from './order-state'
 import { getSettings } from './settings'
 import { contactOnOrder, emailsOnOrders } from './shop/order-queries'
+import { withDeliveryParam } from './shop/product-links'
 import { toProductRefs } from './shop/product-queries'
 import { sendableLinks } from './shop/site-content'
 import { pickLinks, unknownLinksMessage, type SiteLink } from './shop/site-links'
@@ -37,7 +38,10 @@ import type { ToolContext, ToolResult } from './tools/registry'
 // note lists the ones this chat's product tools settled on
 // (lib/discussed-products.ts), newest first, so a note of a chat about a desk
 // never arrives without the desk. The visitor's name is greeted in proper case
-// (lib/name-case.ts): "Hi Chris,", not "Hi chris,".
+// (lib/name-case.ts): "Hi Chris,", not "Hi chris,". A product the visitor
+// chose a delivery service for (choose_delivery) is printed with that service
+// under it, priced by the shop as the unified inbox prices one, and its link
+// carries the service, exactly as the phone assistant's note does.
 //
 // Every send needs the visitor's yes (visitorAgreement), and a chat may send
 // MAX_EMAILS_PER_CHAT, a visitor MAX_EMAILS_PER_VISITOR_PER_HOUR.
@@ -183,6 +187,25 @@ export function cleanSubject(raw: string | undefined): string {
   return line || 'A note of our chat'
 }
 
+/** The references with the delivery service the chat recorded for each one
+ *  (by the exact product or variation id). The inbox prices it from the shop
+ *  and prints it under the product; one no longer offered is simply left off.
+ *  Pure. */
+export function withChosenDeliveries(refs: readonly ProductRef[], recorded: readonly DiscussedProduct[]): ProductRef[] {
+  const chosen = chosenDeliveries(recorded)
+  return refs.map((ref) => {
+    const delivery = chosen.get(ref.id)
+    return delivery ? { ...ref, delivery: delivery.key } : ref
+  })
+}
+
+/** A product as the email prints it: linked with its delivery service chosen
+ *  where it has one the shop still offers. Pure. */
+export function linkWithDelivery(choice: ProductChoice): ProductChoice {
+  const key = choice.deliveryQuote?.key
+  return key ? { ...choice, url: withDeliveryParam(choice.url, key) } : choice
+}
+
 export type SummaryArgs = {
   email: string | null
   orderNumber: string | null
@@ -222,13 +245,15 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
   if (args.linkIds.length > 0 && picked.links.length === 0) {
     return { ok: false, message: `Nothing was sent. ${unknownLinksMessage(picked.unknown)}` }
   }
-  let resolved = await resolveProducts(await toProductRefs(productsToSend(args.productIds, ctx.products, MAX_PRODUCTS_PER_EMAIL)))
+  const listFor = async (given: readonly string[]) =>
+    resolveProducts(withChosenDeliveries(await toProductRefs(productsToSend(given, ctx.products, MAX_PRODUCTS_PER_EMAIL)), ctx.products))
+  let resolved = await listFor(args.productIds)
   if (resolved.length === 0 && args.productIds.length > 0 && ctx.products.length > 0) {
     // None of the ids the model passed is a product the shop can show: the
     // chat's own record, rather than a note with nothing in it.
-    resolved = await resolveProducts(await toProductRefs(productsToSend([], ctx.products, MAX_PRODUCTS_PER_EMAIL)))
+    resolved = await listFor([])
   }
-  const listing = renderProductTable(resolved.map((entry) => entry.choice))
+  const listing = renderProductTable(resolved.map((entry) => linkWithDelivery(entry.choice)))
   const name = args.name?.trim() || ctx.visitorName?.trim() || (recipient.source === 'order' ? namedContact?.name : '') || ''
 
   const sent = await sendTemplateEmail(recipient.email, 'ai-agent-for-live-chat.chat-summary', {
