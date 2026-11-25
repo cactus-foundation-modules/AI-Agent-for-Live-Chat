@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { rankProducts, type IndexedProduct } from './search-rank'
+import { headNoun, rankProducts, type IndexedProduct } from './search-rank'
 
 function product(id: string, fields: Partial<IndexedProduct>): IndexedProduct {
   return { id, name: '', variants: '', category: '', body: '', categoryIds: [], popularity: 0, ...fields }
@@ -47,5 +47,25 @@ describe('rankProducts', () => {
   it('keeps to the category given, and lists it by popularity with no words', () => {
     expect(rankProducts(INDEX, w('green'), { categoryIds: new Set(['task']), sort: 'relevance', limit: 6 }).ids).toEqual(['crew', 'rowan'])
     expect(rankProducts(INDEX, [], { categoryIds: new Set(['task']), sort: 'relevance', limit: 6 }).ids).toEqual(['rowan', 'crew'])
+  })
+
+  it('prices only what the product IS when any match (the live-site desk screens and clamps)', () => {
+    const index = [
+      product('desk', { name: 'impulse cantilever rectangular office desk', head: 'desk', variants: '120cm dark teal blue', body: 'an office desk' }),
+      product('clamps', { name: 'small c-style desk screen clamps', head: 'clamps', variants: '120cm', body: 'for office desks' }),
+      product('screen', { name: 'sch! wave acoustic desktop side screen desk divider', head: 'divider', variants: 'cobalt blue 120cm', body: 'office desk screen' }),
+    ]
+    expect(rankProducts(index, w('blue', 'office', 'desk', '120cm'), { categoryIds: null, sort: 'price', limit: 6 }).ids).toEqual(['desk'])
+    expect(rankProducts(index, w('desk', '120cm'), { categoryIds: null, sort: 'relevance', limit: 6 }).ids[0]).toBe('desk')
+  })
+})
+
+describe('headNoun', () => {
+  it('reads what a product is from its name', () => {
+    expect(headNoun('Impulse Cantilever Rectangular Office Desk')).toBe('desk')
+    expect(headNoun('Small C-Style Desk Screen Clamps, Set of 2')).toBe('clamps')
+    expect(headNoun('Qube Steel Office Filing Cabinet in 25 Colours')).toBe('cabinet')
+    expect(headNoun('Volta Round Cable Port Power Module with Mains Socket and 45W USB')).toBe('module')
+    expect(headNoun('Crew 2 Mesh Back Task Operator Office Chair with Folding Arms')).toBe('chair')
   })
 })

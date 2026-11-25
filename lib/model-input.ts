@@ -114,6 +114,8 @@ export type ContextFacts = {
    *  denies one it sent. */
   emailsSent?: number
   textsSent?: number
+  /** Names of products already sent in an email from this chat. */
+  emailedProducts?: readonly string[]
   /** Order numbers the visitor has proved are theirs in this chat. */
   verifiedOrders?: readonly string[]
   /** Order checks have failed too often (this chat, or this visitor this hour). */
@@ -190,7 +192,10 @@ export function contextNote(facts: ContextFacts): string {
       facts.emailsSent ? `${facts.emailsSent} email${facts.emailsSent === 1 ? '' : 's'}` : '',
       facts.textsSent ? `${facts.textsSent} text${facts.textsSent === 1 ? '' : 's'}` : '',
     ].filter(Boolean).join(' and ')
-    lines.push(`- Already sent from this chat: ${sent}. They went; never say otherwise. If asked about one, it is on its way or has arrived.`)
+    lines.push(`- Already sent from this chat: ${sent}. They went; never say otherwise. You can still send more whenever they ask.`)
+  }
+  if (facts.emailedProducts && facts.emailedProducts.length > 0) {
+    lines.push(`- Already emailed to them: ${facts.emailedProducts.join('; ')}. If they ask for another email of "everything", ask first whether to include these again.`)
   }
   if (facts.warnedOnce) lines.push('- Earlier in this chat they were told you are here to help with the shop. Help them normally if they now ask something genuine; only if they carry on abusing or wasting time, call flag_not_genuine, which ends your part in the chat.')
   if (facts.callbackWanted) lines.push('- A colleague could not be reached for them earlier. Say sorry once for that and offer, once, to have somebody get back to them by email; save_callback only if they say yes. If they decline or move on, drop it.')

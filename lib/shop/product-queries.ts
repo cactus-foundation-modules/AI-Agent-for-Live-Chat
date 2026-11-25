@@ -13,8 +13,8 @@ import {
 } from './product-format'
 import { summariseStockByOption, type OptionAvailability } from './variation-stock'
 import { canBuy, pickForSearch, type SearchVariation } from './search-variations'
-import { rankProducts, type IndexedProduct } from './search-rank'
-import { picksRef, settledOptions, type OptionPick as LabelledPick } from './partial-choice'
+import { headNoun, rankProducts, type IndexedProduct } from './search-rank'
+import { carryChoices, picksRef, settledOptions, type OptionPick as LabelledPick } from './partial-choice'
 import { pickVariations } from './variation-match'
 import { resolveProductDeliveryOptions } from '@/modules/shop/lib/detail-delivery'
 import { getProductFaqCategoryChain } from '@/modules/shop/lib/db/catalogue'
@@ -46,7 +46,13 @@ import type { ProductRef } from '@/modules/unified-inbox/lib/products'
 // ---------------------------------------------------------------------------
 
 const SEARCH_LIMIT = 6
-const DESCRIPTION_CHARS = 900
+/** How much of a product's description get_product reads. Long enough for
+ *  what a page says further down: learned on a live chat, where "it has no
+ *  onward connector, so it cannot daisy-chain" sat past the old 900 and the
+ *  assistant told a visitor the opposite. */
+const DESCRIPTION_CHARS = 3500
+/** The short description in full, as the page prints it. */
+const DETAIL_SUMMARY_CHARS = 1000
 
 const VISIBLE = Prisma.sql`p."status" = 'ACTIVE' AND p."catalogue_hidden" = false AND p."parts_only" = false`
 
@@ -184,6 +190,63 @@ const CANDIDATE_LIMIT = 80
 const INDEX_TTL_MS = 10 * 60 * 1000
 const INDEX_BODY_CHARS = 4000
 let indexCache: { products: IndexedProduct[]; at: number } | null = null
+let familiesCache: { families: Map<string, string[]>; at: number } | null = null
+
+function familyKey(name: string, label: string): string {
+  return `${name.trim().toLowerCase()}|${label.trim().toLowerCase()}`
+}
+
+/**
+ * The colour (or any other) families the shop's own filter files each value
+ * under, read from the Filters module's rules where it is installed: "Finish:
+ * Dark Teal" is in the filter "Blue". Keyed by option or attribute name and
+ * value, both lower case. Read once and kept for a few minutes, like the
+ * vocabulary. Nothing of that module is imported; a site without it has none.
+ *
+ * Learned on a live chat: asked for a blue desk, the assistant found none and
+ * told the visitor the shop's own blue-filtered page showed no blue desks,
+ * because every blue on it was called something else.
+ */
+async function loadFamilies(): Promise<Map<string, string[]>> {
+  if (familiesCache && Date.now() - familiesCache.at < INDEX_TTL_MS) return familiesCache.families
+  const families = new Map<string, string[]>()
+  if (await tableExists('flt_filter_rules') && await tableExists('flt_filters')) {
+    const rows = await prisma.$queryRaw<Array<{ option_name: string; value_label: string; label: string }>>(Prisma.sql`
+      SELECT r."option_name", r."value_label", f."label" FROM "flt_filter_rules" r JOIN "flt_filters" f ON f."id" = r."filter_id"
+      WHERE r."option_name" IS NOT NULL AND r."value_label" IS NOT NULL AND f."label" IS NOT NULL
+      LIMIT 20000
+    `)
+    for (const row of rows) {
+      const key = familyKey(row.option_name, row.value_label)
+      const list = families.get(key) ?? []
+      // Words only: a size band ("Up to 120cm") would let "120" match an 80cm
+      // desk, so a filter label with a figure in it is never a family.
+      if (/\d/.test(row.label)) continue
+      if (!list.includes(row.label) && row.label.trim().toLowerCase() !== row.value_label.trim().toLowerCase()) list.push(row.label)
+      families.set(key, list)
+    }
+  }
+  familiesCache = { families, at: Date.now() }
+  return families
+}
+
+/** The families one value belongs to. */
+function familiesOf(families: ReadonlyMap<string, string[]>, name: string, label: string): string[] {
+  return families.get(familyKey(name, label)) ?? []
+}
+
+/** "Name|Label" lines as the index query hands them, as words: each label
+ *  and the families it is filed under. */
+function pairWords(pairs: string | null, families: ReadonlyMap<string, string[]>): string {
+  if (!pairs) return ''
+  return pairs.split('\n').map((pair) => {
+    const at = pair.indexOf('|')
+    if (at < 0) return pair
+    const name = pair.slice(0, at)
+    const label = pair.slice(at + 1)
+    return [label, ...familiesOf(families, name, label)].join(' ')
+  }).join(' ')
+}
 
 /**
  * The words of every product a visitor could see, read once and kept for a
@@ -197,7 +260,7 @@ let indexCache: { products: IndexedProduct[]; at: number } | null = null
 async function loadSearchIndex(reach: SearchReach): Promise<IndexedProduct[]> {
   if (indexCache && Date.now() - indexCache.at < INDEX_TTL_MS) return indexCache.products
   const options = reach.variations
-    ? Prisma.sql`(SELECT string_agg(ov."label", ' ') FROM "svr_options" o JOIN "svr_option_values" ov ON ov."option_id" = o."id" WHERE o."product_id" = p."id")`
+    ? Prisma.sql`(SELECT string_agg(o."name" || '|' || ov."label", E'\n') FROM "svr_options" o JOIN "svr_option_values" ov ON ov."option_id" = o."id" WHERE o."product_id" = p."id")`
     : Prisma.sql`NULL::text`
   const owned = reach.attributes
     ? reach.variations
@@ -208,7 +271,9 @@ async function loadSearchIndex(reach: SearchReach): Promise<IndexedProduct[]> {
       : Prisma.sql`SELECT pv."product_id" AS owner_id, pv."value_id" FROM "pat_product_values" pv JOIN vis ON vis."id" = pv."product_id"`
     : Prisma.sql`SELECT NULL::text AS owner_id, NULL::text AS value_id WHERE false`
   const labels = reach.attributes
-    ? Prisma.sql`SELECT owned."owner_id", string_agg(av."label", ' ') AS labels FROM owned JOIN "pat_attribute_values" av ON av."id" = owned."value_id" GROUP BY owned."owner_id"`
+    ? Prisma.sql`SELECT owned."owner_id", string_agg(a."name" || '|' || av."label", E'\n') AS labels FROM owned
+        JOIN "pat_attribute_values" av ON av."id" = owned."value_id" JOIN "pat_attributes" a ON a."id" = av."attribute_id"
+        GROUP BY owned."owner_id"`
     : Prisma.sql`SELECT NULL::text AS owner_id, NULL::text AS labels WHERE false`
   const rows = await prisma.$queryRaw<Array<{
     id: string
@@ -236,14 +301,16 @@ async function loadSearchIndex(reach: SearchReach): Promise<IndexedProduct[]> {
     LEFT JOIN labelled ON labelled."owner_id" = p."id"
     WHERE ${VISIBLE}
   `)
+  const families = await loadFamilies().catch(() => new Map<string, string[]>())
   const products = rows.map((row): IndexedProduct => ({
     id: row.id,
     name: row.name.toLowerCase(),
-    variants: `${row.option_labels ?? ''} ${row.attribute_labels ?? ''}`.toLowerCase(),
+    variants: `${pairWords(row.option_labels, families)} ${pairWords(row.attribute_labels, families)}`.toLowerCase(),
     category: (row.category_name ?? '').toLowerCase(),
     body: `${row.sku ?? ''} ${plainText(row.short_description)} ${truncate(plainText(row.description), INDEX_BODY_CHARS)}`.toLowerCase(),
     categoryIds: [...new Set([row.master_category_id ?? '', ...(row.category_ids ?? [])].filter(Boolean))],
     popularity: numberOrNull(row.popularity) ?? 0,
+    head: headNoun(row.name),
   }))
   indexCache = { products, at: Date.now() }
   return products
@@ -328,14 +395,18 @@ async function searchVariations(productIds: string[], reach: SearchReach): Promi
     WHERE sv."product_id" IN (${Prisma.join(productIds)}) AND sv."enabled" = true AND child."status" = 'ACTIVE'
     ORDER BY sv."product_id", sv."position"
   `)
+  const families = await loadFamilies().catch(() => new Map<string, string[]>())
   for (const row of rows) {
     const optionValues = row.option_values ?? []
+    const optionNames = row.option_names ?? []
+    const aliases = optionValues.map((value, index) => familiesOf(families, optionNames[index] ?? '', value))
     const list = out.get(row.product_id) ?? []
     list.push({
       id: row.id,
-      optionNames: row.option_names ?? [],
+      optionNames,
       optionValues,
-      labels: [...optionValues, ...(row.attribute_labels ?? [])],
+      aliases,
+      labels: [...optionValues, ...aliases.flat(), ...(row.attribute_labels ?? [])],
       price: effectivePrice(numberOrNull(row.price) ?? 0, numberOrNull(row.sale_price)).now,
       facts: {
         trackInventory: row.track_inventory,
@@ -366,8 +437,8 @@ export type SearchOptions = {
   /** Leave out what cannot be bought now. On unless the visitor asked about
    *  a particular product. */
   inStockOnly: boolean
-  /** 'price' lists the cheapest first. */
-  sort: 'relevance' | 'price'
+  /** 'price' lists the cheapest first, 'price_desc' the dearest first. */
+  sort: 'relevance' | 'price' | 'price_desc'
   /** A category slug or name: only products in it (or under it). */
   category: string | null
 }
@@ -503,6 +574,7 @@ export async function searchProducts(query: string, options: SearchOptions): Pro
     else leftOut++
   }
   if (options.sort === 'price') ranked.sort((a, b) => a.price - b.price)
+  if (options.sort === 'price_desc') ranked.sort((a, b) => b.price - a.price)
   const products = ranked.slice(0, SEARCH_LIMIT).map((entry) => entry.product)
   const basis = priceBasis(config.taxMode)
   if (products.length === 0) {
@@ -520,6 +592,7 @@ export async function searchProducts(query: string, options: SearchOptions): Pro
     note: [
       `Prices are ${basis}.`,
       options.sort === 'price' ? 'Listed cheapest first, by the price of what fits the words searched.' : '',
+      options.sort === 'price_desc' ? 'Listed dearest first: the premium end of what fits the words searched.' : '',
       options.inStockOnly && leftOut > 0 ? `${leftOut} other match(es) are out of stock right now and were left out: do not offer them.` : '',
       narrowed ? 'Where a product has a variation, the words searched picked out what they want (a colour, a size): quote its price and show its url, not the product\'s. A variation marked exact is one single variation. One not marked exact picks only the options they asked for and leaves the rest for them to choose: quote its price as "from", and never pick the other options for them.' : '',
       'To recommend one, put its url (the variation\'s, where there is one) on a line of its own in your reply, never as a markdown link: the chat shows it as a product with Add to basket.',
@@ -673,6 +746,8 @@ export type VariationsFound = {
    *  settled), as a page address with only those picked, their labels and the
    *  Unified Inbox's picks string. Null when one fits or nothing was settled. */
   chosen: PartialChoice | null
+  /** Labels of options chosen earlier in the chat that were kept. */
+  carried: string[]
 }
 
 export type PartialChoice = { url: string | null; options: string; picks: string | null; priceFrom: string }
@@ -723,6 +798,7 @@ async function findVariations(
   quantity: number | null,
   base: PageBase,
   listingSlug: string | null,
+  carried: ReadonlyMap<string, string> = new Map(),
 ): Promise<VariationsFound | null> {
   if (!(await tableExists('svr_variants'))) return null
   const rows = await prisma.$queryRaw<VariationRow[]>`
@@ -755,9 +831,20 @@ async function findVariations(
     outOfStockBehaviour: row.out_of_stock_behaviour,
     isPreOrder: row.is_pre_order,
   })
-  const candidates = rows.map((row) => ({ row, optionNames: row.option_names ?? [], optionValues: row.option_values ?? [], name: row.name }))
+  const families = await loadFamilies().catch(() => new Map<string, string[]>())
+  const candidates = rows.map((row) => {
+    const optionNames = row.option_names ?? []
+    const optionValues = row.option_values ?? []
+    return { row, optionNames, optionValues, aliases: optionValues.map((value, index) => familiesOf(families, optionNames[index] ?? '', value)), name: row.name }
+  })
   const pick = pickVariations(wanted, candidates)
-  const fits = pick.fits.map((index) => candidates[index]).filter((fit): fit is (typeof candidates)[number] => !!fit)
+  const matched = pick.fits.map((index) => candidates[index]).filter((fit): fit is (typeof candidates)[number] => !!fit)
+  // Options chosen earlier in the chat still hold where these words left them
+  // open (lib/shop/partial-choice.ts carryChoices).
+  const carry = carried.size > 0 && !pick.closest
+    ? carryChoices(matched.map((fit) => readLabelledPicks(fit.row.option_picks)), carried)
+    : { kept: matched.map((_, index) => index), carried: [] as string[] }
+  const fits = carry.kept.map((index) => matched[index]).filter((fit): fit is (typeof candidates)[number] => !!fit)
   const matches = fits.slice(0, MAX_MATCHING_VARIATIONS).map(({ row, optionValues }): VariationMatch => {
     const { now, was } = effectivePrice(numberOrNull(row.price) ?? 0, numberOrNull(row.sale_price))
     const stock = facts(row)
@@ -785,7 +872,7 @@ async function findVariations(
         listingSlug,
         symbol,
       )
-  return { matches, total: fits.length, availableByOption, ignored: pick.ignored, closest: pick.closest, unmet: pick.unmet, chosen }
+  return { matches, total: fits.length, availableByOption, ignored: pick.ignored, closest: pick.closest, unmet: pick.unmet, chosen, carried: carry.carried }
 }
 
 async function loadSpecifications(productId: string): Promise<Array<{ name: string; values: string[] }>> {
@@ -816,11 +903,12 @@ function describeDimensions(row: DetailRow): string | null {
   return `${parts.filter((part): part is string => part !== null).join(', ')} ${unit}`.trim()
 }
 
-/** One product in full, found by its id or by its page slug. */
+/** One product in full, found by its id, its page slug or its exact name. */
 export async function getProductDetail(
   reference: string,
   wantedOptions: string | null = null,
   quantity: number | null = null,
+  carriedFor: (productId: string) => ReadonlyMap<string, string> = () => new Map(),
 ): Promise<ProductDetail | null> {
   const rows = await prisma.$queryRaw<DetailRow[]>`
     SELECT p."id", p."name", p."slug", p."sku", p."price", p."sale_price", p."short_description", p."description", p."type",
@@ -830,8 +918,8 @@ export async function getProductDetail(
            c."name" AS category_name
     FROM "shp_products" p
     LEFT JOIN "shp_categories" c ON c."id" = p."master_category_id"
-    WHERE (p."id" = ${reference} OR p."slug" = ${reference}) AND ${VISIBLE}
-    ORDER BY (p."id" = ${reference}) DESC
+    WHERE (p."id" = ${reference} OR p."slug" = ${reference} OR lower(p."name") = lower(${reference})) AND ${VISIBLE}
+    ORDER BY (p."id" = ${reference}) DESC, (p."slug" = ${reference}) DESC
     LIMIT 1
   `
   const row = rows[0]
@@ -848,7 +936,7 @@ export async function getProductDetail(
     loadDeliveryServices(productId, config.currencySymbol),
     loadDeliveryForecast(productId),
     loadProductFaqs(productId, row.faqs),
-    wantedOptions ? findVariations(productId, wantedOptions, config.currencySymbol, quantity, base, row.slug) : Promise.resolve(null),
+    wantedOptions ? findVariations(productId, wantedOptions, config.currencySymbol, quantity, base, row.slug, carriedFor(productId)) : Promise.resolve(null),
     loadAccessories(productId, config.currencySymbol, base).catch(() => null),
   ])
   const spread = spreads.get(productId) ?? null
@@ -857,6 +945,7 @@ export async function getProductDetail(
 
   return {
     ...toSummary(row, config.currencySymbol, base, spread),
+    summary: truncate(plainText(row.short_description), DETAIL_SUMMARY_CHARS),
     description: truncate(plainText(row.description) || plainText(row.short_description), DESCRIPTION_CHARS),
     dimensions: describeDimensions(row),
     weight: weight === null ? null : `${weight} ${row.weight_unit ?? ''}`.trim(),
@@ -920,9 +1009,12 @@ function priceNoteCore(
   if (!wantedOptions || found === null) {
     return `${base} This product is sold in ${spread.count} variations and the price depends on which is chosen, so the price above is a range. If the visitor has named any options (colour, size, back height), call get_product again with those words in "options" to get the exact price of that variation. To answer which options are in stock, call get_product again with the options they have named (or "in stock" if none) and answer from availableByOption or each variation's availability. Never quote the range as if it were the price of their choice.`
   }
-  const setAside = found.ignored.length > 0
-    ? ` These words match none of this product's options and were set aside: ${found.ignored.join(', ')}. They may describe the product itself (how a finish looks, say); check the options listed above if one matters.`
+  const kept = found.carried.length > 0
+    ? ` Kept from what they chose earlier in this chat: ${found.carried.join(', ')}. Tell them you have kept it; if they meant to change it, they will say.`
     : ''
+  const setAside = (found.ignored.length > 0
+    ? ` These words match none of this product's options and were set aside: ${found.ignored.join(', ')}. They may describe the product itself (how a finish looks, say); check the options listed above if one matters.`
+    : '') + kept
   if (found.matches.length === 0) {
     return `${base}${setAside} No variation matches those options. Read the option values listed above, map the visitor's words onto them yourself (for example "no mod panel" is "Without Modesty Panel") and call get_product again with those exact values before telling the visitor anything. Only if that also finds nothing, say which option they asked for is not sold.`
   }

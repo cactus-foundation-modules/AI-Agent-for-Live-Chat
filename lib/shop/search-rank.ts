@@ -18,6 +18,14 @@
 // cheapest filing cabinet. A word half the catalogue carries ("office" in an
 // office furniture shop) means nothing here and is not counted. Where no
 // product has every such word in those places, the ones with the most do.
+//
+// What a product IS counts most of all: the last word of its name, before any
+// "with ..." or "in ..." ("Impulse Cantilever Rectangular Office Desk" is a
+// desk; "Small C-Style Desk Screen Clamps, Set of 2" is clamps). Learned on a
+// live chat, where "the cheapest blue office desk" came back as desk screens
+// and clamps, which mention desks, offices and 120cm in every description.
+// A product whose type is a searched word ranks above one that only mentions
+// it, and for cheapest or dearest first, only those are priced when any are.
 // ---------------------------------------------------------------------------
 
 export type IndexedProduct = {
@@ -30,13 +38,24 @@ export type IndexedProduct = {
   /** The product's categories: its own and every one it is filed under. */
   categoryIds: readonly string[]
   popularity: number
+  /** What it is: its name's head noun, lower case (headNoun). */
+  head?: string
+}
+
+/** What a product is, from its name: the last word before any "with",
+ *  "in", "for", comma, dash or bracket. Lower case; '' for none. Pure. */
+export function headNoun(name: string): string {
+  const core = name.toLowerCase().split(/\s+(?:with|in|for|including|plus)\s+|[,(]|\s+-\s+/)[0] ?? ''
+  const words = core.split(/[^a-z0-9]+/).filter(Boolean)
+  return words[words.length - 1] ?? ''
 }
 
 export type RankOptions = {
   /** Only products in one of these categories, when given. */
   categoryIds: ReadonlySet<string> | null
-  /** 'price': keep only the strong matches, for pricing afterwards. */
-  sort: 'relevance' | 'price'
+  /** 'price' or 'price_desc': keep only the strong matches, for pricing
+   *  afterwards (cheapest or dearest first). */
+  sort: 'relevance' | 'price' | 'price_desc'
   limit: number
 }
 
@@ -69,13 +88,16 @@ export function rankProducts(index: readonly IndexedProduct[], words: readonly (
   const pool = options.categoryIds
     ? index.filter((product) => product.categoryIds.some((id) => options.categoryIds?.has(id)))
     : index
-  const common = words.map((variants) => index.length > 0 && index.filter((product) => wordScore(product, variants) > 0).length / index.length > COMMON_SHARE)
+  // Common by where it counts: the name, the variations, the category.
+  const common = words.map((variants) => index.length > 0 && index.filter((product) => wordScore(product, variants) >= 2).length / index.length > COMMON_SHARE)
+  const isType = (product: IndexedProduct) => !!product.head && words.some((variants) => variants.some((variant) => variant === product.head))
   const scored = pool.map((product) => {
     const scores = words.map((variants) => wordScore(product, variants))
     return {
       product,
       matched: scores.filter((score) => score > 0).length,
-      score: scores.reduce((sum, score) => sum + score, 0),
+      score: scores.reduce((sum, score) => sum + score, 0) + (isType(product) ? 3 : 0),
+      type: isType(product),
       // Meaningful words found in the name, the variations or the category.
       strong: scores.filter((score, at) => score >= 2 && !common[at]).length,
     }
@@ -87,7 +109,8 @@ export function rankProducts(index: readonly IndexedProduct[], words: readonly (
     kept = scored.filter((entry) => entry.matched === best)
     loosened = true
   }
-  if (options.sort === 'price' && kept.length > 0) {
+  if (options.sort !== 'relevance' && kept.length > 0) {
+    if (kept.some((entry) => entry.type)) kept = kept.filter((entry) => entry.type)
     const most = Math.max(...kept.map((entry) => entry.strong))
     kept = kept.filter((entry) => entry.strong === most)
   }

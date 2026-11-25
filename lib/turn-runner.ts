@@ -223,6 +223,7 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
         warnedOnce: row.state === 'not_genuine',
         emailsSent: row.emailsSent,
         textsSent: row.textsSent,
+        emailedProducts: row.discussedProducts.filter((entry) => entry.emailed).map((entry) => entry.name ?? 'a product'),
         verifiedOrders: row.verifiedOrders,
         orderChecksLocked: locked,
         emailsUsedUp: usedUp,

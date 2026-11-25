@@ -12,6 +12,7 @@ import {
 } from '../discussed-products'
 import { getSiteUrlOrNull } from '@/lib/config/env'
 import { looksLikeLink, readShopLink } from '../shop/shop-link'
+import { choicesInAddress } from '../shop/partial-choice'
 import { saveDiscussedProducts } from '../order-state'
 import { matchService, serviceMissMessage, timingMenus } from '../shop/delivery-choice'
 import { lookupFaqs } from '../shop/faq-queries'
@@ -106,7 +107,7 @@ export const searchProductsTool = defineTool({
     properties: {
       query: text('What the visitor is looking for, in a few plain words. May be empty when link or category is given.'),
       max_price: { type: 'number', description: 'Optional. The most the visitor wants to spend, in pounds.' },
-      sort: { type: 'string', enum: ['relevance', 'cheapest'], description: 'cheapest: lists the cheapest first, across every match. Use it whenever they ask for the cheapest, the lowest price or something cheap.' },
+      sort: { type: 'string', enum: ['relevance', 'cheapest', 'dearest'], description: 'cheapest: the cheapest first, across every match; use it whenever they ask for the cheapest, the lowest price or something cheap. dearest: the dearest first; use it when they want something premium, luxurious, high-end, impressive or "for the boss", or say the first suggestions look too cheap.' },
       in_stock_only: { type: 'boolean', description: 'Defaults to true: products (and colours or sizes) that cannot be bought right now are left out. Pass false only when they ask about one particular product they named, or ask what is out of stock.' },
       category: text('Optional. A category name or slug, to search only that category and those under it.'),
       link: text('Optional. A link to one of the shop\'s category pages the visitor sent, exactly as they sent it. Its category, filters (such as a colour) and sort are used.'),
@@ -117,7 +118,7 @@ export const searchProductsTool = defineTool({
   input: z.object({
     query: z.string().trim().max(200),
     max_price: z.number().positive().max(1_000_000).optional(),
-    sort: z.enum(['relevance', 'cheapest']).optional(),
+    sort: z.enum(['relevance', 'cheapest', 'dearest']).optional(),
     in_stock_only: z.boolean().optional(),
     category: z.string().trim().max(200).optional(),
     link: z.string().trim().max(1000).optional(),
@@ -127,13 +128,14 @@ export const searchProductsTool = defineTool({
     args.category ? `category: ${args.category}` : '',
     args.link ? 'from a link' : '',
     args.sort === 'cheapest' ? 'cheapest first' : '',
+    args.sort === 'dearest' ? 'dearest first' : '',
     args.in_stock_only === false ? 'including out of stock' : '',
   ].filter(Boolean).join(', '),
   guidance: 'If search_products finds nothing, search again with a different word for the same thing (shorter, a synonym, another spelling) before saying the shop does not sell it. For "the cheapest ..." always pass sort cheapest. When the visitor sends a link to one of the shop\'s category pages, pass it in link; for a product page, pass it to get_product as product_id. Never say you cannot open or check a link to this shop.',
   async handler(ctx, args) {
     let query = args.query
     let category = blankToNull(args.category)
-    let sort = args.sort === 'cheapest' ? ('price' as const) : ('relevance' as const)
+    let sort: 'relevance' | 'price' | 'price_desc' = args.sort === 'cheapest' ? 'price' : args.sort === 'dearest' ? 'price_desc' : 'relevance'
     if (args.link) {
       const link = readShopLink(asLink(args.link), siteHost())
       if (link.kind === 'product') {
@@ -218,7 +220,7 @@ export const getProductTool = defineTool({
       reference = link.slug
       options = [link.options, options].filter(Boolean).join(' ') || null
     }
-    const detail = await getProductDetail(reference, options, args.quantity ?? null)
+    const detail = await getProductDetail(reference, options, args.quantity ?? null, (productId) => choicesInAddress(recordedEntry(ctx.products, productId)?.url))
     if (!detail) return { ok: false, message: 'That product could not be found. Search for it with search_products and use the id it returns.' }
     await remember(ctx, fromProductDetail(detail))
     noteShown(ctx, shownByTool([{ id: detail.id, name: detail.name, url: detail.url, variations: detail.matchingVariations, partial: detail.chosenOptions }]))

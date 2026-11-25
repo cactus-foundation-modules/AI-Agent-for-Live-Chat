@@ -7,7 +7,8 @@ import { orderTrackingUrl } from '@/modules/shop/lib/order-tracking'
 import { renderProductTable } from '@/modules/unified-inbox/lib/products/render'
 import { resolveProducts, type ProductChoice, type ProductRef } from '@/modules/unified-inbox/lib/products'
 import { greetingName, isPlausibleEmail, visitorWroteEmail } from './contact-text'
-import { chosenDeliveries, chosenPicks, productsToSend, type DiscussedProduct } from './discussed-products'
+import { chosenDeliveries, chosenPicks, markEmailed, productsToSend, type DiscussedProduct } from './discussed-products'
+import { saveDiscussedProducts } from './order-state'
 import { titleCaseName } from './name-case'
 import { pickVerifiedOrder } from './order-checks'
 import { MAX_EMAILS_PER_CHAT, MAX_EMAILS_PER_VISITOR_PER_HOUR, recentRateEvents, recordEmailSent, visitorKey } from './order-state'
@@ -48,7 +49,9 @@ import type { ToolContext, ToolResult } from './tools/registry'
 // MAX_EMAILS_PER_CHAT, a visitor MAX_EMAILS_PER_VISITOR_PER_HOUR.
 // ---------------------------------------------------------------------------
 
-export const MAX_PRODUCTS_PER_EMAIL = 5
+/** As many as a chat remembers (MAX_DISCUSSED_PRODUCTS): "email me everything"
+ *  must not lose the first half of the chat to a cap. Learned live, at 5. */
+export const MAX_PRODUCTS_PER_EMAIL = 10
 export const MAX_LINKS_PER_EMAIL = 5
 const SUMMARY_MAX = 3000
 
@@ -273,8 +276,11 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
   if (args.linkIds.length > 0 && picked.links.length === 0) {
     return { ok: false, message: `Nothing was sent. ${unknownLinksMessage(picked.unknown)}` }
   }
-  const listFor = async (given: readonly string[]) =>
-    resolveProducts(withChosenDeliveries(await toProductRefs(productsToSend(given, ctx.products, MAX_PRODUCTS_PER_EMAIL)), ctx.products))
+  let sentIds: string[] = []
+  const listFor = async (given: readonly string[]) => {
+    sentIds = productsToSend(given, ctx.products, MAX_PRODUCTS_PER_EMAIL)
+    return resolveProducts(withChosenDeliveries(await toProductRefs(sentIds), ctx.products))
+  }
   let resolved = await listFor(args.productIds)
   if (resolved.length === 0 && args.productIds.length > 0 && ctx.products.length > 0) {
     // None of the ids the model passed is a product the shop can show: the
@@ -299,6 +305,14 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
   })
   if (!sent) return SEND_FAILED
   await countEmail(ctx)
+  // Remembered as emailed, so a later "email me everything" can ask whether
+  // to include them again rather than guess.
+  if (resolved.length > 0) {
+    ctx.products = markEmailed(ctx.products, sentIds)
+    await saveDiscussedProducts(ctx.conversationId, ctx.products).catch((err: unknown) => {
+      console.error('[ai-agent-for-live-chat] could not remember what was emailed', err)
+    })
+  }
   const leftOut = unknownLinksMessage(picked.unknown)
   return {
     ok: true,

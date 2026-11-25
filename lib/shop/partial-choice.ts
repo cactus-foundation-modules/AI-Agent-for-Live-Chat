@@ -69,3 +69,49 @@ export function parsePicksRef(value: unknown): string | null {
   if (typeof value !== 'string') return null
   return /^[a-z0-9-]+\.[a-z0-9-]+(?:\+[a-z0-9-]+\.[a-z0-9-]+)*$/.test(value) ? value : null
 }
+
+/** The options already chosen for a listing earlier in a chat, by query key
+ *  and value slug, read from the address the chat recorded for it (a chosen
+ *  variation's, or a partial choice's). The delivery service is not an option.
+ *  Pure. */
+export function choicesInAddress(address: string | null | undefined): Map<string, string> {
+  const out = new Map<string, string>()
+  if (!address) return out
+  try {
+    new URL(address).searchParams.forEach((value, key) => {
+      if (key !== 'delivery-service' && value && !out.has(key)) out.set(key, value)
+    })
+  } catch {
+    // An address that does not parse carries no choices.
+  }
+  return out
+}
+
+/**
+ * Earlier choices carried into a new look-up. For each option chosen before,
+ * the fits are narrowed to that value, but only where the new words left that
+ * option open (the fits still differ on it) and some fit has it: a value the
+ * visitor has just changed ("actually white") is never overruled, because the
+ * fits then all agree on the new one. Returns the indexes kept, in order, and
+ * the labels carried. Pure.
+ *
+ * Learned on a live chat: a visitor who had asked about the planter top and
+ * then asked for the cupboard "in blue" was shown it blue without the planter,
+ * "you did not pick the planter option for me? fail".
+ */
+export function carryChoices(
+  fits: ReadonlyArray<readonly OptionPick[]>,
+  carried: ReadonlyMap<string, string>,
+): { kept: number[]; carried: string[] } {
+  let kept = fits.map((_, index) => index)
+  const labels: string[] = []
+  for (const [key, slug] of carried) {
+    const valueAt = (index: number) => fits[index]?.find(([name]) => paramKey(name) === key)
+    const values = new Set(kept.map((index) => valueAt(index)?.[1]).filter((value): value is string => !!value))
+    if (values.size < 2 || !values.has(slug)) continue
+    kept = kept.filter((index) => valueAt(index)?.[1] === slug)
+    const label = kept.length > 0 ? valueAt(kept[0] as number)?.[2] : undefined
+    if (label) labels.push(label)
+  }
+  return { kept, carried: labels }
+}

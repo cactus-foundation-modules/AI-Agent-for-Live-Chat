@@ -62,6 +62,8 @@ export type DiscussedProduct = {
   name?: string
   /** True once the assistant has shown it (its address in a reply). */
   linked?: boolean
+  /** True once it has gone out in an email from this chat. */
+  emailed?: boolean
   /** For a listing where the visitor chose only some options: those options,
    *  in the Unified Inbox's spelling (lib/shop/partial-choice.ts). `url` then
    *  picks just those. Absent everywhere else. */
@@ -97,6 +99,7 @@ export function parseDiscussedProducts(value: unknown): DiscussedProduct[] {
       ...(delivery ? { delivery } : {}),
       ...(name ? { name: name.slice(0, 200) } : {}),
       ...(record.linked === true ? { linked: true } : {}),
+      ...(record.emailed === true ? { emailed: true } : {}),
       ...(picks && text(record.parentId) === null ? { picks } : {}),
     })
   }
@@ -138,8 +141,10 @@ export function rememberProducts(list: readonly DiscussedProduct[], found: reado
     // is still the product that was shown.
     const replaced = entry.picks ? out.some((kept) => kept.parentId === entry.id && kept.linked) : false
     const linked = entry.linked === true || same?.linked === true || parent?.linked === true || replaced
+    const emailed = entry.emailed === true || same?.emailed === true
     const fresh: DiscussedProduct = {
       ...entry,
+      ...(emailed ? { emailed: true } : {}),
       ...(delivery ? { delivery } : {}),
       ...(name ? { name } : {}),
       ...(linked ? { linked: true } : {}),
@@ -339,4 +344,10 @@ export function productLinksToSend(given: readonly string[], recorded: readonly 
     out.push({ label: entry.name ?? null, url })
   }
   return out.slice(0, Math.max(0, max))
+}
+
+/** The list with these ids marked as emailed. Nothing else changes. Pure. */
+export function markEmailed(list: readonly DiscussedProduct[], ids: readonly string[]): DiscussedProduct[] {
+  const sent = new Set(ids)
+  return list.map((entry) => (sent.has(entry.id) ? { ...entry, emailed: true } : entry))
 }

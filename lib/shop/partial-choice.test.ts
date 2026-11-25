@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parsePicksRef, picksRef, settledOptions, type OptionPick } from './partial-choice'
+import { carryChoices, choicesInAddress, parsePicksRef, picksRef, settledOptions, type OptionPick } from './partial-choice'
 
 /** An Eclipse-style chair: adjustments, arms, seat colour, back. */
 function chair(adjust: string, arms: string, seat: string): OptionPick[] {
@@ -40,5 +40,33 @@ describe('picksRef', () => {
     expect(parsePicksRef('arm-option.no-arms+upholstery-colour.senna-yellow')).toBe('arm-option.no-arms+upholstery-colour.senna-yellow')
     expect(parsePicksRef('colour=yellow')).toBeNull()
     expect(parsePicksRef(3)).toBeNull()
+  })
+})
+
+describe('carryChoices (the live-site planter)', () => {
+  const cupboard = (height: string, finish: string, planter: string): OptionPick[] => [
+    ['Height', height, height === '1016cm' ? '101.6cm' : '200cm'],
+    ['Finish', finish, finish],
+    ['Planter', planter, planter === 'with-planter' ? 'With Planter' : 'Without Planter'],
+  ]
+  const blueFits = [
+    cupboard('1016cm', 'pastel-blue', 'with-planter'),
+    cupboard('1016cm', 'pastel-blue', 'without-planter'),
+    cupboard('200cm', 'pastel-blue', 'without-planter'),
+  ]
+
+  it('keeps the planter and height chosen earlier when they now ask for blue', () => {
+    const carried = choicesInAddress('https://shop.test/cupboard?height=1016cm&planter=with-planter&delivery-service=express')
+    expect(carryChoices(blueFits, carried)).toEqual({ kept: [0], carried: ['101.6cm', 'With Planter'] })
+  })
+
+  it('never overrules a value they have just changed', () => {
+    const whiteFits = [cupboard('1016cm', 'white', 'with-planter')]
+    expect(carryChoices(whiteFits, new Map([['finish', 'pastel-blue']]))).toEqual({ kept: [0], carried: [] })
+  })
+
+  it('reads no choices from no address', () => {
+    expect(choicesInAddress(null).size).toBe(0)
+    expect(choicesInAddress('not a url').size).toBe(0)
   })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addressKey,
+  markEmailed,
   markLinked,
   shownByTool,
   MAX_DISCUSSED_PRODUCTS,
@@ -229,5 +230,16 @@ describe('a partial choice (the live-site yellow chair)', () => {
   it('a search result shown with only some options picked is recorded that way', () => {
     const shown = shownByTool([{ id: 'eclipse', name: 'Eclipse', url: 'https://shop.test/eclipse', partial: { url: partial.url, picks: partial.picks } }])
     expect(markLinked([], shown, `Here it is:\n${partial.url}`)).toEqual([{ ...partial, linked: true }])
+  })
+})
+
+describe('markEmailed', () => {
+  it('marks only the products that went, and keeps the mark when a product is read again', () => {
+    const a = { id: 'a', url: 'https://shop.test/a', parentId: null, name: 'A' }
+    const b = { id: 'b', url: 'https://shop.test/b', parentId: null, name: 'B' }
+    const sent = markEmailed([a, b], ['a'])
+    expect(sent).toEqual([{ ...a, emailed: true }, b])
+    expect(rememberProducts(sent, [a]).find((e) => e.id === 'a')?.emailed).toBe(true)
+    expect(parseDiscussedProducts([{ ...a, emailed: true }])).toEqual([{ ...a, emailed: true }])
   })
 })

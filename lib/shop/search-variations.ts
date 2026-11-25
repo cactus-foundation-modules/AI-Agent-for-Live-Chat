@@ -32,6 +32,8 @@ export type SearchVariation = {
   /** The option names and values, in the shop's order. */
   optionNames: readonly string[]
   optionValues: readonly string[]
+  /** The shop filter's families for each value, in step with optionValues. */
+  aliases?: ReadonlyArray<readonly string[]>
   /** Every label the variation carries: option values and the attribute values
    *  stamped on it (a colour family such as "Green & Black"). */
   labels: readonly string[]
@@ -67,7 +69,7 @@ function labelHas(label: string, variants: readonly string[]): boolean {
  *  `words` is each searched word with its spellings, as expandSearchWords gives. */
 export function pickForSearch<V extends SearchVariation>(variations: readonly V[], words: readonly (readonly string[])[], query = ''): ListingPick<V> {
   const matched = query
-    ? pickVariations(query, variations.map((variation) => ({ optionNames: variation.optionNames, optionValues: variation.optionValues, name: '' })))
+    ? pickVariations(query, variations.map((variation) => ({ optionNames: variation.optionNames, optionValues: variation.optionValues, aliases: variation.aliases, name: '' })))
     : null
   if (matched && !matched.closest && matched.fits.length > 0 && matched.fits.length < variations.length) {
     const fitting = matched.fits.map((index) => variations[index]).filter((variation): variation is V => !!variation)
