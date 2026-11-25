@@ -25,10 +25,12 @@ import {
 // encrypted key), the chat state row through every move (offer, take, claim,
 // release, hand-over, the switch going off, the sweep), usage and the tool log,
 // callbacks, unanswered questions and the weekly notice, the copy from the
-// phone assistant, the proved orders, failed checks, emails and overview of a
-// chat, and the hourly limits. And every query the tools read the shop with:
+// phone assistant, the proved orders, failed checks, emails, texts, products
+// discussed and overview of a chat, and the hourly limits; and 002 brought onto
+// an install made before it, twice over. And every query the tools read the shop with:
 // products (with their page addresses, variations and accessories), orders (a
-// member's own, the postcode check, the contact an email goes to), pages, FAQs,
+// member's own, the postcode check, the contact an email goes to, the phones a
+// text may go to), pages, FAQs,
 // payment methods, delivery to a postcode, and earlier contact. Core, the shop,
 // shop-variations and product-addons are migrated in first so those run against
 // the real tables.
@@ -152,6 +154,23 @@ suite('ai-agent-for-live-chat SQL, against a real Postgres', () => {
       await dropTestRole(server, roleName).catch(() => undefined)
     }
   }, 120_000)
+
+  it('brings an install made before 002 up to date, twice over', async () => {
+    // The shape a site had on 0.1.0: no texts, no products discussed, and only
+    // two kinds of rate event.
+    await client.query(`ALTER TABLE "aichat_conversations" DROP COLUMN "discussed_products", DROP COLUMN "texts_sent"`)
+    await client.query(`ALTER TABLE "aichat_rate_events" DROP CONSTRAINT "aichat_rate_events_kind_check"`)
+    await client.query(`ALTER TABLE "aichat_rate_events" ADD CONSTRAINT "aichat_rate_events_kind_check" CHECK ("kind" IN ('failed_check', 'email'))`)
+    const upgrade = readFileSync(join(__dirname, '..', 'migrations', '002_products_and_texts.sql'), 'utf8')
+    await client.query(upgrade)
+    await client.query(upgrade)
+    const columns = await client.query<{ column_name: string }>(
+      `SELECT "column_name" FROM information_schema.columns WHERE "table_name" = 'aichat_conversations' AND "column_name" IN ('discussed_products', 'texts_sent') ORDER BY 1`,
+    )
+    expect(columns.rows.map((row) => row.column_name)).toEqual(['discussed_products', 'texts_sent'])
+    await client.query(`INSERT INTO "aichat_rate_events" ("visitor_key", "kind") VALUES ('visitor:upgrade', 'text')`)
+    await client.query(`DELETE FROM "aichat_rate_events" WHERE "visitor_key" = 'visitor:upgrade'`)
+  })
 
   it('reads the defaults the migration seeds', async () => {
     const s = await settings.getSettings()
@@ -349,6 +368,30 @@ suite('ai-agent-for-live-chat SQL, against a real Postgres', () => {
     expect([...(row?.verifiedOrders ?? [])].sort()).toEqual(['DW1', 'DW2', 'DW3'])
   })
 
+  it('counts texts per chat and per visitor, and keeps the products a chat was about', async () => {
+    const key = orderState.visitorKey('c-orders', 'v1')
+    await orderState.recordTextSent('c-orders', key)
+    await orderState.recordTextSent('c-orders', key)
+    expect(await orderState.recentRateEvents(key, 'text')).toBe(2)
+    expect(await orderState.recentRateEvents(key, 'email')).toBe(1)
+
+    const fresh = await conversations.getConversationState('c-orders')
+    expect(fresh).toMatchObject({ textsSent: 2, discussedProducts: [] })
+
+    const list = [
+      { id: 'chair', url: 'https://shop.test/shop/products/chair', parentId: null },
+      { id: 'desk-black', url: 'https://shop.test/shop/products/air-lite-desk?frame-colour=black', parentId: 'desk' },
+    ]
+    await orderState.saveDiscussedProducts('c-orders', list)
+    expect((await conversations.getConversationState('c-orders'))?.discussedProducts).toEqual(list)
+    const many = Array.from({ length: 14 }, (_, i) => ({ id: `p${i}`, url: null, parentId: null }))
+    await orderState.saveDiscussedProducts('c-orders', many)
+    const kept = (await conversations.getConversationState('c-orders'))?.discussedProducts ?? []
+    expect(kept).toHaveLength(10)
+    expect(kept[9]?.id).toBe('p13')
+    await orderState.saveDiscussedProducts('c-orders', list)
+  })
+
   it('prunes rate events older than a day, and refuses a kind the CHECK does not know', async () => {
     await client.query(`INSERT INTO "aichat_rate_events" ("visitor_key", "kind", "created_at") VALUES ('visitor:old', 'email', CURRENT_TIMESTAMP - INTERVAL '2 days')`)
     await orderState.recordEmailSent('c-orders', 'visitor:new')
@@ -429,6 +472,13 @@ suite('ai-agent-for-live-chat SQL, against a real Postgres', () => {
       expect(await orderQueries.contactOnOrder('DW000101')).toEqual({ email: 'jo@example.com', name: 'Jo Bloggs' })
       expect(await orderQueries.contactOnOrder('DW999')).toBeNull()
       expect((await orderQueries.emailsOnOrders(['DW000101', 'DW000102'])).sort()).toEqual(['jo@example.com', 'sam@example.com'])
+
+      await client.query(`UPDATE "shp_orders" SET "customer_phone" = '0113 249 6000', "notify_phone" = '07700 900123' WHERE "order_number" = 'DW000101'`)
+      expect(await orderQueries.phonesOnOrders(['DW000101', 'DW000102', 'DW999'])).toEqual(expect.arrayContaining([
+        { orderNumber: 'DW000101', phones: ['07700 900123', '0113 249 6000'] },
+        { orderNumber: 'DW000102', phones: [] },
+      ]))
+      expect(await orderQueries.phonesOnOrders([])).toEqual([])
     })
 
     it('reads earlier contact by the addresses tied to the visitor', async () => {

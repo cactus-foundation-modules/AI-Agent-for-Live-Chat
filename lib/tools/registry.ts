@@ -1,6 +1,7 @@
 import type { z } from 'zod'
 import type { FileRef } from '../attachments'
 import type { ConversationRow } from '../conversation-row'
+import type { DiscussedProduct } from '../discussed-products'
 import type { AiChatSettings } from '../settings-model'
 
 // ---------------------------------------------------------------------------
@@ -37,9 +38,10 @@ export type ToolContext = {
   /** Live Chat's visitor id for the chat, when it has one: what the hourly
    *  limits count against (lib/order-state.ts). */
   visitorId: string | null
-  /** The name and email the visitor gave Live Chat's own form, if any. */
+  /** The name, email and phone the visitor gave Live Chat's own form, if any. */
   visitorName: string | null
   visitorEmail: string | null
+  visitorPhone: string | null
   /** Everything the visitor has typed in this chat, joined. An email address
    *  the model passes is only used if the visitor really wrote it. */
   visitorText: string
@@ -49,6 +51,11 @@ export type ToolContext = {
   /** This chat's proved orders, failed checks and emails, kept up to date as
    *  the tools run so a second call in one turn sees the first. */
   orders: ChatOrders
+  /** Texts this chat has sent, kept up to date as the tools run. */
+  textsSent: number
+  /** The products this chat has been about, newest last, kept up to date as
+   *  the product tools run (lib/discussed-products.ts). */
+  products: DiscussedProduct[]
   /** What the tools did this turn that the turn runner acts on afterwards. */
   effects: TurnEffects
 }

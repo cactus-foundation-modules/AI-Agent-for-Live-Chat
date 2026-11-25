@@ -62,6 +62,7 @@ vi.mock('./unanswered', () => ({ recordUnanswered: vi.fn() }))
 // itself is what is under test here.
 vi.mock('./tools', () => ({ TOOLS: [] }))
 vi.mock('./emails', () => ({ emailsUsedUp: vi.fn(async () => false) }))
+vi.mock('./texts', () => ({ textingAvailable: vi.fn(async () => true), textsUsedUp: vi.fn(async () => false) }))
 vi.mock('./order-checks', () => ({ checksLocked: vi.fn(async () => false) }))
 
 const { processConversation, catchUp } = await import('./turn-runner')

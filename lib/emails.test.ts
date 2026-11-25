@@ -12,10 +12,17 @@ vi.mock('@/lib/email', () => mail)
 vi.mock('@/modules/shop/lib/config', () => ({ getShopConfigCached: async () => ({}) }))
 vi.mock('@/modules/shop/lib/email', () => ({ orderUrlVars: (url: string) => ({ orderUrl: url, reportIssueUrl: '', hasReportIssueUrl: '' }) }))
 vi.mock('@/modules/shop/lib/order-tracking', () => shop)
-vi.mock('@/modules/unified-inbox/lib/products', () => ({ resolveProducts: async () => [] }))
-vi.mock('@/modules/unified-inbox/lib/products/render', () => ({ renderProductTable: () => '' }))
+type Ref = { moduleName: string; kind: string; id: string }
+// Only ids in `shop.real` are products the shop can show, as the inbox decides.
+const products = vi.hoisted(() => ({
+  real: new Set<string>(),
+  resolveProducts: vi.fn(async (refs: Ref[]) => refs.filter((ref) => products.real.has(ref.id)).map((ref) => ({ choice: ref }))),
+  toProductRefs: vi.fn(async (ids: string[]) => ids.map((id) => ({ moduleName: 'shop', kind: 'product', id }))),
+}))
+vi.mock('@/modules/unified-inbox/lib/products', () => ({ resolveProducts: products.resolveProducts }))
+vi.mock('@/modules/unified-inbox/lib/products/render', () => ({ renderProductTable: (choices: Ref[]) => choices.map((c) => `[${c.id}]`).join('') }))
 vi.mock('./shop/order-queries', () => queries)
-vi.mock('./shop/product-queries', () => ({ toProductRefs: async () => [] }))
+vi.mock('./shop/product-queries', () => ({ toProductRefs: products.toProductRefs }))
 vi.mock('./shop/site-content', () => ({ sendableLinks: async () => new Map() }))
 vi.mock('./settings', () => ({ getSettings: async () => ({ extraInstructions: '' }) }))
 vi.mock('./order-state', async (original) => ({ ...(await original<typeof import('./order-state')>()), ...state }))
@@ -32,6 +39,7 @@ beforeEach(() => {
   state.recentRateEvents.mockResolvedValue(0)
   mail.sendTemplateEmail.mockResolvedValue(true)
   queries.emailsOnOrders.mockResolvedValue([])
+  products.real = new Set(['desk', 'desk-black', 'chair'])
 })
 
 describe('visitor agreement', () => {
@@ -112,5 +120,49 @@ describe('emailChatSummary', () => {
     const refused = await emailChatSummary(fakeContext(), { email: 'someone@example.com', orderNumber: null, name: null, subject: undefined, summary: 'x', productIds: [], linkIds: [] })
     expect(refused).toMatchObject({ ok: false, sent: false })
     expect(mail.sendTemplateEmail).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('emailChatSummary lists the products the chat was about', () => {
+  const deskBlack = { id: 'desk-black', url: 'https://shop.test/desk?colour=black', parentId: 'desk' }
+  const chair = { id: 'chair', url: 'https://shop.test/chair', parentId: null }
+  const vars = () => (mail.sendTemplateEmail.mock.calls[0] as unknown as [string, string, Record<string, string>])[2]
+  const send = (ctx: ReturnType<typeof fakeContext>, productIds: string[], name: string | null = null) =>
+    emailChatSummary(ctx, { email: 'jo@example.com', orderNumber: null, name, subject: 'Desks', summary: 'About desks.', productIds, linkIds: [] })
+
+  it('falls back to the chat\'s recorded products, newest first, when the model passes none (the live-site bug)', async () => {
+    const out = await send(fakeContext({ visitorText: 'jo@example.com', products: [chair, deskBlack] }), [])
+    expect(out).toMatchObject({ ok: true, sent: true, productCount: 2 })
+    expect(vars().productsHtml).toBe('[desk-black][chair]')
+    expect(vars().hasProducts).toBe('true')
+  })
+
+  it('uses the ids passed, swapping a listing for the variation chosen', async () => {
+    await send(fakeContext({ visitorText: 'jo@example.com', products: [chair, deskBlack] }), ['desk'])
+    expect(vars().productsHtml).toBe('[desk-black]')
+  })
+
+  it('never lists an id no tool returned: an invented one falls back to the record', async () => {
+    await send(fakeContext({ visitorText: 'jo@example.com', products: [chair] }), ['made-up-id'])
+    expect(vars().productsHtml).toBe('[chair]')
+  })
+
+  it('sends no product list when nothing was discussed', async () => {
+    await send(fakeContext({ visitorText: 'jo@example.com' }), [])
+    expect(vars()).toMatchObject({ productsHtml: '', hasProducts: '' })
+  })
+
+  it('greets the visitor in proper case', async () => {
+    await send(fakeContext({ visitorText: 'jo@example.com' }), [], 'chris')
+    expect(vars().customerName).toBe('Chris')
+    vi.clearAllMocks()
+    await send(fakeContext({ visitorText: 'jo@example.com', visitorName: "mary-jane o'neil" }), [])
+    expect(vars().customerName).toBe("Mary-Jane O'Neil")
+  })
+
+  it('greets the order\'s customer in proper case on the order link', async () => {
+    queries.contactOnOrder.mockResolvedValue({ email: 'owner@example.com', name: 'JO BLOGGS' })
+    await emailOrderLink(fakeContext({ orders: { verified: ['DW1'], failedChecks: 0, emailsSent: 0 } }), null)
+    expect(vars().customerName).toBe('Jo Bloggs')
   })
 })

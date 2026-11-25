@@ -30,6 +30,8 @@ vi.mock('../conversations', () => ({ enterWaiting: vi.fn(), setCallbackWanted: v
 vi.mock('../handover', () => ({ scheduleHandoverCheck: vi.fn() }))
 vi.mock('../callbacks', () => ({ saveCallback: vi.fn() }))
 vi.mock('../unanswered', () => ({ recordUnanswered: vi.fn() }))
+vi.mock('../texts', () => ({ sendChatText: vi.fn(async () => ({ ok: true, sent: true, linkCount: 2 })) }))
+vi.mock('../order-state', () => ({ saveDiscussedProducts: vi.fn(async () => undefined) }))
 
 const { TOOLS } = await import('./index')
 const { dispatchTool, functionTools } = await import('./registry')
@@ -41,6 +43,7 @@ const ORDER = [
   'search_products', 'find_by_sku', 'get_product', 'list_categories', 'get_faqs', 'get_payment_info',
   'lookup_order', 'list_my_orders', 'email_order_link', 'email_summary', 'get_visitor_history',
   'search_pages', 'check_delivery_postcode', 'get_reviews', 'search_guides', 'raise_order_request', 'save_quote',
+  'send_text',
 ]
 
 describe('the tool list', () => {
@@ -50,7 +53,11 @@ describe('the tool list', () => {
 
   it('has no phone-only tools', () => {
     const names = TOOLS.map((tool) => tool.name)
-    for (const gone of ['lookup_caller_orders', 'build_basket', 'send_text', 'get_caller_history']) expect(names).not.toContain(gone)
+    for (const gone of ['lookup_caller_orders', 'build_basket', 'get_caller_history']) expect(names).not.toContain(gone)
+  })
+
+  it('appends send_text at the very end, so the cached start is unchanged', () => {
+    expect(TOOLS[TOOLS.length - 1]?.name).toBe('send_text')
   })
 
   it('shows the model a JSON schema for each, and the Notes panel words for each', () => {
@@ -85,7 +92,12 @@ describe('the standing instructions', () => {
   })
 
   it('has nothing spoken and nothing for a phone', () => {
-    expect(text).not.toMatch(/one digit at a time|read (it )?aloud|caller|send_text|build_basket/i)
+    expect(text).not.toMatch(/one digit at a time|read (it )?aloud|caller|build_basket/i)
+  })
+
+  it('offers texting only when the turn says it is available, and insists on product ids in a note', () => {
+    expect(text).toContain('Offer a text only when the note about the visitor says texting is available')
+    expect(text).toContain('ALWAYS pass the id of every product you recommended or they chose in product_ids')
   })
 
   it('includes every tool\'s guidance and no em dashes', () => {
@@ -112,9 +124,17 @@ describe('the log never holds what proved an order', () => {
     expect(email.summary).not.toContain('@')
   })
 
+  it('a text logs whether it went and how many links, never the number or the words', async () => {
+    const done = await dispatchTool(TOOLS, 'send_text', JSON.stringify({ visitor_agreed: 'yes please', what: 'summary', note: 'The desks', phone: '07700 900123' }), fakeContext())
+    expect(done.summary).toBe('note: sent; 2 link(s)')
+    expect(done.summary).not.toMatch(/0770|desks/i)
+  })
+
   it('a send tool without the visitor\'s yes sends nothing', async () => {
     const done = await dispatchTool(TOOLS, 'email_order_link', JSON.stringify({}), fakeContext())
     expect(done.result).toMatchObject({ ok: false, sent: false })
+    const text = await dispatchTool(TOOLS, 'send_text', JSON.stringify({ what: 'summary', note: 'x' }), fakeContext())
+    expect(text.result).toMatchObject({ ok: false, sent: false })
     const raise = await dispatchTool(TOOLS, 'raise_order_request', JSON.stringify({ kind: 'issue', reason: 'ARRIVED_DAMAGED' }), fakeContext())
     expect(raise.result).toMatchObject({ ok: false, raised: false })
   })

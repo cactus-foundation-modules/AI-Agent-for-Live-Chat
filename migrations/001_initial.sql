@@ -97,6 +97,14 @@ CREATE TABLE IF NOT EXISTS "aichat_conversations" (
     "failed_order_checks"    INTEGER      NOT NULL DEFAULT 0,
     -- Emails this chat has sent (order links, notes of the chat, quotes).
     "emails_sent"            INTEGER      NOT NULL DEFAULT 0,
+    -- Texts this chat has sent (notes with links, the order link). Added for
+    -- existing installs by 002_products_and_texts.sql.
+    "texts_sent"             INTEGER      NOT NULL DEFAULT 0,
+    -- [{id, url, parentId}] - the products and variations this chat has been
+    -- about, newest last, ten at most (lib/discussed-products.ts): what a note
+    -- or a text lists when the model does not say. Added for existing installs
+    -- by 002_products_and_texts.sql.
+    "discussed_products"     JSONB        NOT NULL DEFAULT '[]'::jsonb,
     -- A written overview for colleagues, made when Notes is opened, and the
     -- newest chat_messages id it covered: reused until a newer message comes.
     "overview"               TEXT         NOT NULL DEFAULT '',
@@ -147,7 +155,7 @@ CREATE INDEX IF NOT EXISTS "aichat_unanswered_created_idx" ON "aichat_unanswered
 
 -- ---------------------------------------------------------------------------
 -- What one visitor has done in the last hour, across all their chats: failed
--- order checks and emails sent, so opening a fresh chat does not reset the
+-- order checks, emails and texts sent, so opening a fresh chat does not reset the
 -- limits. Keyed on Live Chat's visitor id when the chat has one, otherwise on
 -- the chat itself ("visitor:<id>" / "chat:<id>"). Rows older than a day are
 -- pruned as new ones are written; nothing here outlives the hour it counts.
@@ -157,10 +165,11 @@ CREATE TABLE IF NOT EXISTS "aichat_rate_events" (
     "visitor_key" TEXT         NOT NULL,
     --   failed_check - an order check that did not match
     --   email        - an email sent to the visitor
+    --   text         - a text sent to the visitor
     "kind"        TEXT         NOT NULL,
     "created_at"  TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "aichat_rate_events_pkey" PRIMARY KEY ("id"),
-    CONSTRAINT "aichat_rate_events_kind_check" CHECK ("kind" IN ('failed_check', 'email'))
+    CONSTRAINT "aichat_rate_events_kind_check" CHECK ("kind" IN ('failed_check', 'email', 'text'))
 );
 
 CREATE INDEX IF NOT EXISTS "aichat_rate_events_lookup_idx"

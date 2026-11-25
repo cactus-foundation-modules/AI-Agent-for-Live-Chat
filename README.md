@@ -21,7 +21,8 @@ It only ever calls itself a digital assistant, never a person, and its messages 
 - **Raises cancellations, returns and damage reports** on a checked order, through the shop's own rules, once it has written back what it will raise and the visitor has said yes. Photos the visitor sent in the chat go straight into a damage report; with none, the shop's confirmation email asks for them.
 - **Reads pictures and PDFs** the visitor sends: a photo of the damage, a screenshot, a floor plan. Anything else is left for a colleague.
 - **Explains how to pay and when the paperwork comes**, read live from the shop's Payments and Invoices tabs, including your own bank transfer wording.
-- **Emails, when asked**: the order's link (only ever to the address on the order) or a short note of the chat with links to the products it mentioned, from the address you choose. Saves a quote too, where the shop has the Quotes module. The wording is editable under Settings > Emails, in the Chat assistant group.
+- **Emails, when asked**: the order's link (only ever to the address on the order) or a short note of the chat with links to the products it mentioned, from the address you choose. The note always lists the products the chat settled on, even if the assistant forgets to say which, and greets the visitor by name in proper case ("Hi Chris,"). Saves a quote too, where the shop has the Quotes module. The wording is editable under Settings > Emails, in the Chat assistant group.
+- **Texts, when asked**: a short note with the shop's own links (the products discussed, a page or article, or a proved order's page) to a UK mobile the visitor typed in the chat, gave Live Chat's contact box or has on a proved order. It uses whichever texting module the site has set up (Twilio today) through the site's own texting settings; with none, it offers email instead and never mentions texts.
 - **Reads your pages, articles and reviews**, answers "can you get it to ... by Friday?" from the checkout's own delivery zones, and, once a visitor has proved an order or is signed in, recognises their earlier chats, calls and emails (never on an email address merely typed into the chat, which anybody could type).
 - **Takes callbacks** and lists them on its settings screen, with a notification each time.
 - **Notes what it could not answer**, so you know which FAQs and pages are worth adding, with a notification each Monday.
@@ -69,6 +70,7 @@ In the order the model is shown them (append new ones at the end: the order is p
 | `search_guides` | Passages from the shop's articles. |
 | `raise_order_request` | Raises a cancellation, return or issue report on a checked order, with the chat's photos. |
 | `save_quote` | Saves the chosen products as a quote the shop emails (only with the Quotes module). |
+| `send_text` | Texts a short note with the shop's own links, or a proved order's page, to the visitor's UK mobile (only with a texting module set up). |
 
 ### How order checks work
 
@@ -78,6 +80,11 @@ In the order the model is shown them (append new ones at the end: the order is p
 - Proved orders are kept on the chat (`verified_orders`); every other order tool only touches those.
 - Order rows are read without email, phone or street address, and the free text on an order is scrubbed of anything that looks like one, so the model never has one to repeat. An email goes to an address picked on the server (the order's own, or one the visitor typed in the chat), never one the model writes.
 - Emails are capped at three a chat and six an hour per visitor, and every send, request and quote needs the visitor's own yes (`visitor_agreed`).
+- Texts follow the email rule for where they go: a number the visitor typed in this chat, the one they gave Live Chat's contact box, or the mobile on a proved order (an order's page only ever to the mobile on that order). UK mobiles only, written as +447...; a landline is refused and the model offers email. They are capped at three a chat and six an hour per visitor (`aichat_conversations.texts_sent`, `aichat_rate_events` kind `text`), need the visitor's yes, and the number is never handed back to the model or logged.
+
+### Products a chat was about
+
+`get_product` (when one variation matches exactly, that variation; otherwise the product) and `find_by_sku` (its one hit) remember what they found on the chat, newest last, ten at most (`aichat_conversations.discussed_products`, `lib/discussed-products.ts`). A search's results are not remembered. `email_summary` lists the products the model passes, swapping a listing for the variation the chat settled on, and when it passes none (or none the shop can show) it lists the remembered ones, newest first. `send_text` links only remembered products, whose page addresses the tools built.
 
 ### Photos in a damage report
 
@@ -91,6 +98,7 @@ The visitor's JPEG, PNG and WebP pictures from the chat (six at most) are put th
 - The instructions are built from settings alone (`lib/prompt.ts`) so OpenAI can serve them from its prompt cache; the visitor's page, basket, proved orders and the time go at the end of each turn's input (`lib/model-input.ts`). The newest four pictures or PDFs the visitor sent go into their own messages as `input_image` / `input_file` parts (`lib/attachments.ts`).
 - The shop queries in `lib/shop/` are copied from the phone assistant and kept in step by hand; nothing imports the other module. Product page addresses are built in `lib/shop/product-links.ts`.
 - The Notes overview is written on demand (`admin/conversation/overview`, one call with no tools) and stored with the newest message it covered (`overview_message_id`), so it is reused until the chat moves on.
+- Texts go through core's SMS provider (`getActiveSmsProvider` in `lib/auth/sms`), so this module has no texting dependency of its own. Whether texting is set up is checked at the start of each turn and told to the model in the end-of-turn note, so the instructions stay settings-only for the prompt cache.
 - Raw SQL is run against a real Postgres by `lib/sql.live.test.ts` (`RUN_LEDGER_GUARDS=1`).
 
 ## Licence

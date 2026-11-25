@@ -31,6 +31,7 @@ import { saveCallback } from './callbacks'
 import { scheduleHandoverCheck } from './handover'
 import { cannotAnswerLine, notGenuineAskLine } from './lines'
 import { emailsUsedUp } from './emails'
+import { textingAvailable, textsUsedUp } from './texts'
 import { contextNote, transcriptInput } from './model-input'
 import { checksLocked } from './order-checks'
 import { notGenuineStep } from './not-genuine'
@@ -175,15 +176,20 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
     visitorId: chat.conversation.visitorId,
     visitorName: chat.conversation.visitorName,
     visitorEmail: chat.conversation.visitorEmail,
+    visitorPhone: chat.conversation.visitorPhone,
     visitorText: chat.messages.filter((m) => m.sender === 'visitor' && m.id <= upToId).map((m) => m.body).join('\n'),
     photos: photosForReport(chat.messages, upToId),
     orders: { verified: [...row.verifiedOrders], failedChecks: row.failedOrderChecks, emailsSent: row.emailsSent },
+    textsSent: row.textsSent,
+    products: [...row.discussedProducts],
     effects: noEffects(),
   }
-  const [loaded, locked, usedUp] = await Promise.all([
+  const [loaded, locked, usedUp, canText, textsGone] = await Promise.all([
     loadFiles(conversationId, filesForModel(chat.messages, upToId)),
     checksLocked(ctx).catch(() => false),
     emailsUsedUp(ctx).catch(() => false),
+    textingAvailable(),
+    textsUsedUp(ctx).catch(() => false),
   ])
   const conversation = [
     ...transcriptInput(chat.messages, upToId, AUTHOR_ID, loaded),
@@ -205,6 +211,8 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
         verifiedOrders: row.verifiedOrders,
         orderChecksLocked: locked,
         emailsUsedUp: usedUp,
+        textingAvailable: canText,
+        textsUsedUp: textsGone,
       }),
     },
   ]

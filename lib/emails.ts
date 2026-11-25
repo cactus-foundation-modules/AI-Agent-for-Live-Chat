@@ -6,6 +6,8 @@ import { orderTrackingUrl } from '@/modules/shop/lib/order-tracking'
 import { renderProductTable } from '@/modules/unified-inbox/lib/products/render'
 import { resolveProducts } from '@/modules/unified-inbox/lib/products'
 import { isPlausibleEmail, visitorWroteEmail } from './contact-text'
+import { productsToSend } from './discussed-products'
+import { titleCaseName } from './name-case'
 import { pickVerifiedOrder } from './order-checks'
 import { MAX_EMAILS_PER_CHAT, MAX_EMAILS_PER_VISITOR_PER_HOUR, recentRateEvents, recordEmailSent, visitorKey } from './order-state'
 import { getSettings } from './settings'
@@ -31,7 +33,11 @@ import type { ToolContext, ToolResult } from './tools/registry'
 //   - no address is ever handed back to the model, so none can be repeated in
 //     the chat.
 // The model's words reach the email only as escaped text; products and links
-// are the shop's own, looked up by id.
+// are the shop's own, looked up by id. When the model passes no products, the
+// note lists the ones this chat's product tools settled on
+// (lib/discussed-products.ts), newest first, so a note of a chat about a desk
+// never arrives without the desk. The visitor's name is greeted in proper case
+// (lib/name-case.ts): "Hi Chris,", not "Hi chris,".
 //
 // Every send needs the visitor's yes (visitorAgreement), and a chat may send
 // MAX_EMAILS_PER_CHAT, a visitor MAX_EMAILS_PER_VISITOR_PER_HOUR.
@@ -52,11 +58,11 @@ export function visitorAgreement(value: string | undefined): string | null {
 }
 
 /** The answer a send tool gives without a yes. Pure. */
-export function notAgreedResult(what: string): ToolResult {
+export function notAgreedResult(what: string, how: 'emailed' | 'texted' = 'emailed'): ToolResult {
   return {
     ok: false,
     sent: false,
-    message: `Nothing has been sent. Do not say anything was. Ask whether they would like ${what} emailed to them, and only once they say yes, call this again with their words in visitor_agreed.`,
+    message: `Nothing has been sent. Do not say anything was. Ask whether they would like ${what} ${how} to them, and only once they say yes, call this again with their words in visitor_agreed.`,
   }
 }
 
@@ -95,7 +101,7 @@ export async function emailOrderLink(ctx: ToolContext, requested: string | null)
   if (!url) return { ok: false, message: 'Order links are not switched on for this shop, so none can be emailed. Offer a callback instead.' }
 
   const sent = await sendTemplateEmail(contact.email, 'ai-agent-for-live-chat.order-link', {
-    customerName: contact.name || 'there',
+    customerName: titleCaseName(contact.name) || 'there',
     orderNumber,
     ...orderUrlVars(url, config),
   })
@@ -216,12 +222,17 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
   if (args.linkIds.length > 0 && picked.links.length === 0) {
     return { ok: false, message: `Nothing was sent. ${unknownLinksMessage(picked.unknown)}` }
   }
-  const refs = await toProductRefs(args.productIds.slice(0, MAX_PRODUCTS_PER_EMAIL))
-  const resolved = await resolveProducts(refs)
+  let resolved = await resolveProducts(await toProductRefs(productsToSend(args.productIds, ctx.products, MAX_PRODUCTS_PER_EMAIL)))
+  if (resolved.length === 0 && args.productIds.length > 0 && ctx.products.length > 0) {
+    // None of the ids the model passed is a product the shop can show: the
+    // chat's own record, rather than a note with nothing in it.
+    resolved = await resolveProducts(await toProductRefs(productsToSend([], ctx.products, MAX_PRODUCTS_PER_EMAIL)))
+  }
   const listing = renderProductTable(resolved.map((entry) => entry.choice))
+  const name = args.name?.trim() || ctx.visitorName?.trim() || (recipient.source === 'order' ? namedContact?.name : '') || ''
 
   const sent = await sendTemplateEmail(recipient.email, 'ai-agent-for-live-chat.chat-summary', {
-    customerName: args.name?.trim() || ctx.visitorName?.trim() || (recipient.source === 'order' ? namedContact?.name : '') || 'there',
+    customerName: titleCaseName(name) || 'there',
     subject: cleanSubject(args.subject),
     summaryHtml: textToHtml(summary) + linksHtml(picked.links),
     productsHtml: listing,
@@ -233,6 +244,7 @@ export async function emailChatSummary(ctx: ToolContext, args: SummaryArgs): Pro
   return {
     ok: true,
     sent: true,
+    productCount: resolved.length,
     message: ['Sent. Tell them it is on its way and to check their junk folder if it does not arrive in a few minutes. Never write the address out.', leftOut].filter(Boolean).join(' '),
   }
 }

@@ -1,5 +1,6 @@
 import { emailsUsedUp, countEmail } from './emails'
 import { isPlausibleEmail, visitorWroteEmail } from './contact-text'
+import { titleCaseName } from './name-case'
 import { quotesAvailable, saveQuote } from './shop/quote-saver'
 import type { ToolContext, ToolResult } from './tools/registry'
 
@@ -33,7 +34,7 @@ export async function saveChatQuote(ctx: ToolContext, input: { name: string | nu
   if (input.lines.length === 0) return { ok: false, message: 'There is nothing to quote. Pass every product they want, each with its exact variation id and quantity.' }
   if (await emailsUsedUp(ctx)) return { ok: false, message: 'Enough emails have been sent from this chat to send a quote as well. Offer a callback instead.' }
 
-  const name = (input.name ?? '').trim() || ctx.visitorName?.trim() || ''
+  const name = titleCaseName((input.name ?? '').trim() || ctx.visitorName?.trim() || '')
   if (!name) return { ok: false, message: 'The quote needs their name. Ask for it and try again.' }
 
   const given = (input.email ?? '').trim().toLowerCase()

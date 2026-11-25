@@ -1,10 +1,11 @@
 import { prisma } from '@/lib/db/prisma'
 import { parseOrderList } from './conversation-row'
+import { MAX_DISCUSSED_PRODUCTS, type DiscussedProduct } from './discussed-products'
 
 // ---------------------------------------------------------------------------
 // What a chat has proved and spent: the orders the visitor has shown are
-// theirs, the order checks that did not match, the emails sent, and the
-// overview colleagues read in Notes.
+// theirs, the order checks that did not match, the emails and texts sent, the
+// products it has been about, and the overview colleagues read in Notes.
 //
 // The per-chat counts live on the chat's own row (aichat_conversations). The
 // hourly ones live in aichat_rate_events, keyed on the visitor rather than the
@@ -22,8 +23,11 @@ export const MAX_FAILED_CHECKS_PER_VISITOR_PER_HOUR = 6
 /** Emails one chat may send, and one visitor in an hour. */
 export const MAX_EMAILS_PER_CHAT = 3
 export const MAX_EMAILS_PER_VISITOR_PER_HOUR = 6
+/** Texts one chat may send, and one visitor in an hour. */
+export const MAX_TEXTS_PER_CHAT = 3
+export const MAX_TEXTS_PER_VISITOR_PER_HOUR = 6
 
-export type RateKind = 'failed_check' | 'email'
+export type RateKind = 'failed_check' | 'email' | 'text'
 
 /** Who the hourly limits count against. Pure. */
 export function visitorKey(conversationId: string, visitorId: string | null): string {
@@ -78,6 +82,27 @@ export async function recordEmailSent(conversationId: string, key: string): Prom
     WHERE "conversation_id" = ${conversationId}
   `
   await addRateEvent(key, 'email')
+}
+
+/** A text went to the visitor: counted on the chat and on the visitor. */
+export async function recordTextSent(conversationId: string, key: string): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE "aichat_conversations" SET "texts_sent" = "texts_sent" + 1, "updated_at" = CURRENT_TIMESTAMP
+    WHERE "conversation_id" = ${conversationId}
+  `
+  await addRateEvent(key, 'text')
+}
+
+/** Keeps the chat's list of the products it has been about
+ *  (lib/discussed-products.ts), replacing what was there. One turn runs at a
+ *  time per chat and its tools one after another, so the list the turn holds
+ *  is the whole truth. */
+export async function saveDiscussedProducts(conversationId: string, products: readonly DiscussedProduct[]): Promise<void> {
+  const json = JSON.stringify(products.slice(-MAX_DISCUSSED_PRODUCTS))
+  await prisma.$executeRaw`
+    UPDATE "aichat_conversations" SET "discussed_products" = ${json}::jsonb, "updated_at" = CURRENT_TIMESTAMP
+    WHERE "conversation_id" = ${conversationId}
+  `
 }
 
 /** Keeps a freshly written overview with the newest message it covered. */

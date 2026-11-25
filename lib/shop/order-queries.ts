@@ -388,6 +388,22 @@ export async function contactOnOrder(orderNumber: string): Promise<{ email: stri
   return { email: row.customer_email.trim(), name: row.customer_name?.trim() ?? '' }
 }
 
+/** The phone numbers on proved orders, for texting their customer: the number
+ *  chosen for updates first, then the customer's own. Read here and handed to
+ *  the text tool only, never to the model. */
+export async function phonesOnOrders(orderNumbers: readonly string[]): Promise<Array<{ orderNumber: string; phones: string[] }>> {
+  if (orderNumbers.length === 0) return []
+  const rows = await prisma.$queryRaw<Array<{ order_number: string; notify_phone: string | null; customer_phone: string | null }>>(Prisma.sql`
+    SELECT "order_number", "notify_phone", "customer_phone" FROM "shp_orders"
+    WHERE "kind" = 'SALE' AND "order_number" IN (${Prisma.join([...orderNumbers])})
+    ORDER BY "created_at" DESC
+  `)
+  return rows.map((row) => ({
+    orderNumber: row.order_number,
+    phones: [row.notify_phone, row.customer_phone].map((phone) => phone?.trim() ?? '').filter((phone) => phone !== ''),
+  }))
+}
+
 /** One of a signed-in member's own orders, by the number they gave (with or
  *  without the prefix and padding zeros), read in full. Only orders on their
  *  account are searched, so a number that is somebody else's finds nothing. */

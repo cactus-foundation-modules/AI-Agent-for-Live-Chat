@@ -3,15 +3,17 @@ import { checkOrder, myOrders } from '../order-checks'
 import { emailChatSummary, emailOrderLink, notAgreedResult, visitorAgreement, MAX_LINKS_PER_EMAIL, MAX_PRODUCTS_PER_EMAIL } from '../emails'
 import { raiseOrderRequest } from '../order-request'
 import { MAX_QUOTE_LINES, saveChatQuote } from '../quote'
+import { MAX_TEXT_LINKS } from '../text-message'
+import { sendChatText } from '../texts'
 import { visitorHistory } from '../visitor-history'
 import { defineTool, type ToolParameters, type ToolResult } from './registry'
 
 // ---------------------------------------------------------------------------
 // The tools about a visitor's own orders and anything sent to them: checking
 // an order, a signed-in member's list, the order link, a note of the chat,
-// earlier contact, raising a request and saving a quote. Ported from the phone
-// assistant's tools and rewritten for a chat (lib/order-checks.ts says who may
-// hear about which order).
+// earlier contact, raising a request, saving a quote and a text. Ported from
+// the phone assistant's tools and rewritten for a chat (lib/order-checks.ts
+// says who may hear about which order).
 //
 // None of them ever hands the model an email address, a phone number or a
 // street address, and none of them logs one: each summarise says what
@@ -113,7 +115,7 @@ export const emailOrderLinkTool = defineTool({
 
 export const emailSummaryTool = defineTool({
   name: 'email_summary',
-  description: "Email the visitor a short written note of the chat (product advice, answers to their questions), with the shop's own links to any products, pages or articles you pass. Only once they have said yes to it. Goes to an email address they typed in this chat (pass it in email), or the one on an order proved in this chat. Never include order details.",
+  description: "Email the visitor a short written note of the chat (product advice, answers to their questions), with the shop's own links to the products, pages and articles you pass. Only once they have said yes to it. ALWAYS pass product_ids with every product you recommended or they chose (the chosen variation's own id where there is one); the email lists them with picture, link and price. Goes to an email address they typed in this chat (pass it in email), or the one on an order proved in this chat. Never include order details.",
   parameters: {
     type: 'object',
     properties: {
@@ -125,7 +127,7 @@ export const emailSummaryTool = defineTool({
       summary: text('The note itself: plain sentences covering what they wanted, what you recommended and why, and the key facts. No prices (the email lists them), no order details, no web addresses.'),
       product_ids: {
         type: 'array',
-        description: `The id of every product you recommended or discussed (a variation's own id where they chose one). The email lists each with its picture, link and price. At most ${MAX_PRODUCTS_PER_EMAIL}.`,
+        description: `Always fill this in when any product came up: the id of every product you recommended or they chose, the chosen variation's own id (from matchingVariations or find_by_sku) where there is one, never only the listing's. The email lists each with its picture, link and price. At most ${MAX_PRODUCTS_PER_EMAIL}.`,
         items: text('One product or variation id, exactly as the tools returned it.'),
       },
       link_ids: {
@@ -147,7 +149,9 @@ export const emailSummaryTool = defineTool({
     product_ids: z.array(z.string().trim().min(1).max(100)).max(MAX_PRODUCTS_PER_EMAIL * 2).optional(),
     link_ids: z.array(z.string().trim().min(1).max(600)).max(10).optional(),
   }),
-  summarise: (args, result) => `${sent(result)}; ${args.product_ids?.length ?? 0} product(s), ${args.link_ids?.length ?? 0} link(s)`,
+  // The products the email listed (the chat's own record when none were
+  // passed), not merely how many the model named.
+  summarise: (args, result) => `${sent(result)}; ${typeof result?.productCount === 'number' ? result.productCount : args.product_ids?.length ?? 0} product(s), ${args.link_ids?.length ?? 0} link(s)`,
   async handler(ctx, args) {
     if (!visitorAgreement(args.visitor_agreed)) return notAgreedResult('a written note of the chat')
     return emailChatSummary(ctx, {
@@ -290,6 +294,56 @@ export const saveQuoteTool = defineTool({
       name: blankToNull(args.name),
       email: blankToNull(args.email),
       lines: args.items.map((line) => ({ productId: line.product_id, quantity: line.quantity })),
+    })
+  },
+})
+
+export const sendTextTool = defineTool({
+  name: 'send_text',
+  description: `Text the visitor a short note with the shop's own links: the pages of products discussed in this chat, a page or article the tools returned, or (what "order_link") the page of an order proved in this chat. Only once they have said yes to it, and only when the note about the visitor says texting is available. Goes only to a UK mobile: a number they typed in this chat themselves (pass it in phone, exactly as typed), the one they gave the chat form, or the one on an order proved in this chat; the order link goes only to the mobile on that order. Never put personal details in the note. Says if texts are not set up or the number cannot take one; then offer email instead. At most ${MAX_TEXT_LINKS} links.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      visitor_agreed: text(VISITOR_AGREED),
+      what: { type: 'string', enum: ['summary', 'order_link'], description: 'summary: a short note with product, page or article links. order_link: the page of an order proved in this chat (progress, tracking, reporting a problem).' },
+      note: text('The words of the text: one or two plain sentences, for example "Here are the two desks we talked about." No prices, no web addresses, no email addresses or phone numbers. Required for summary.'),
+      phone: text('The mobile number exactly as they typed it in this chat. Omit to use the number they gave the chat form, or the one on an order proved in this chat.'),
+      order_number: text('Only when several orders are proved in this chat: the one they mean (its page for order_link, or its mobile number for summary).'),
+      product_ids: {
+        type: 'array',
+        description: 'For summary: the products to link, each the id the tools returned (the chosen variation\'s own id where there is one). Omit to link the products this chat settled on.',
+        items: text('One product or variation id, exactly as the tools returned it.'),
+      },
+      link_ids: {
+        type: 'array',
+        description: 'For summary: pages or articles to link, each a link id (pageLinkId, or an id from links) from search_pages or search_guides.',
+        items: text('One link id or address, exactly as the tools returned it.'),
+      },
+    },
+    required: ['visitor_agreed', 'what'],
+    additionalProperties: false,
+  },
+  input: z.object({
+    visitor_agreed: AgreedField,
+    what: z.enum(['summary', 'order_link']),
+    note: z.string().trim().max(1000).optional(),
+    phone: z.string().trim().max(40).optional(),
+    order_number: z.string().trim().max(60).optional(),
+    product_ids: z.array(z.string().trim().min(1).max(100)).max(10).optional(),
+    link_ids: z.array(z.string().trim().min(1).max(600)).max(10).optional(),
+  }),
+  // Whether it went and how many links, never the number or the words.
+  summarise: (args, result) => `${args.what === 'order_link' ? 'order link' : 'note'}: ${sent(result)}; ${typeof result?.linkCount === 'number' ? result.linkCount : 0} link(s)`,
+  guidance: 'Offer a text only when the note about the visitor says texting is available, and only send one (send_text) once they have said yes. Never write a phone number out, theirs or anybody\'s.',
+  async handler(ctx, args) {
+    if (!visitorAgreement(args.visitor_agreed)) return notAgreedResult(args.what === 'order_link' ? 'the link to their order page' : 'the links', 'texted')
+    return sendChatText(ctx, {
+      what: args.what,
+      note: blankToNull(args.note),
+      phone: blankToNull(args.phone),
+      orderNumber: blankToNull(args.order_number),
+      productIds: args.product_ids ?? [],
+      linkIds: args.link_ids ?? [],
     })
   },
 })

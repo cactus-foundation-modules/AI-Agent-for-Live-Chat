@@ -7,6 +7,7 @@ import {
   lookupOrderTool,
   raiseOrderRequestTool,
   saveQuoteTool,
+  sendTextTool,
 } from './order-tools'
 import type { RegisteredTool } from './registry'
 import {
@@ -48,4 +49,5 @@ export const TOOLS: readonly RegisteredTool[] = [
   searchGuidesTool,
   raiseOrderRequestTool,
   saveQuoteTool,
+  sendTextTool,
 ]

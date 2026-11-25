@@ -1,4 +1,5 @@
 import { isChatState, type ChatState } from './constants'
+import { parseDiscussedProducts, type DiscussedProduct } from './discussed-products'
 
 // One aichat_conversations row, as the rest of the module reads it. Pure: the
 // raw row in (Prisma hands BIGINT back as bigint, TIMESTAMP as Date, JSONB
@@ -38,6 +39,9 @@ export type ConversationRow = {
   verifiedOrders: string[]
   failedOrderChecks: number
   emailsSent: number
+  textsSent: number
+  /** The products this chat has been about, newest last (lib/discussed-products.ts). */
+  discussedProducts: DiscussedProduct[]
   overview: string
   /** The newest chat message the overview covered; 0 for none yet. */
   overviewMessageId: number
@@ -114,6 +118,8 @@ export function parseConversationRow(row: Record<string, unknown>): Conversation
     verifiedOrders: parseOrderList(row.verified_orders),
     failedOrderChecks: num(row.failed_order_checks),
     emailsSent: num(row.emails_sent),
+    textsSent: num(row.texts_sent),
+    discussedProducts: parseDiscussedProducts(row.discussed_products),
     overview: typeof row.overview === 'string' ? row.overview : '',
     overviewMessageId: num(row.overview_message_id),
   }

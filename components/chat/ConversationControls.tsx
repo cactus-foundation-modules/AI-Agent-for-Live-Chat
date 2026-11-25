@@ -57,6 +57,7 @@ export const TOOL_WORDS: Record<string, string> = {
   search_guides: 'Searched the articles',
   raise_order_request: 'Raised a request on an order',
   save_quote: 'Saved a quote',
+  send_text: 'Texted the visitor',
   spam_check: 'Spam check',
   not_genuine: 'Not-genuine follow-up',
 }

@@ -1,10 +1,12 @@
 import { z } from 'zod'
+import { fromProductDetail, fromSkuHits, rememberProducts, type DiscussedProduct } from '../discussed-products'
+import { saveDiscussedProducts } from '../order-state'
 import { lookupFaqs } from '../shop/faq-queries'
 import { paymentInfo } from '../shop/payment-queries'
 import { deliveryToPostcode } from '../shop/postcode-delivery'
 import { findBySku, getProductDetail, listTopCategories, searchProducts } from '../shop/product-queries'
 import { productReviews, searchGuides, searchPages, type Passage } from '../shop/site-content'
-import { defineTool, type ToolParameters } from './registry'
+import { defineTool, type ToolContext, type ToolParameters } from './registry'
 
 // ---------------------------------------------------------------------------
 // The tools about the shop itself: its products, FAQs, payment methods, pages,
@@ -17,7 +19,10 @@ import { defineTool, type ToolParameters } from './registry'
 // a product card, with this module's Add to basket under it, for any product
 // page address on a line of its own.
 //
-// Read only. Nothing here writes anything or touches anybody's details.
+// Read only, but for one note: the product a visitor settles on (get_product's
+// exact variation, a product code's hit) is remembered on the chat
+// (lib/discussed-products.ts), so a note or a text sent later can list it even
+// when the model forgets to. Nothing here touches anybody's details.
 // ---------------------------------------------------------------------------
 
 function text(description: string): Record<string, unknown> {
@@ -28,6 +33,16 @@ const NO_ARGS: ToolParameters = { type: 'object', properties: {}, required: [], 
 
 function blankToNull(value: string | undefined): string | null {
   return value && value.trim() !== '' ? value.trim() : null
+}
+
+/** Adds what a product tool found to the chat's list and saves it. A list that
+ *  cannot be saved never costs the visitor their answer. */
+async function remember(ctx: ToolContext, found: readonly DiscussedProduct[]): Promise<void> {
+  if (found.length === 0) return
+  ctx.products = rememberProducts(ctx.products, found)
+  await saveDiscussedProducts(ctx.conversationId, ctx.products).catch((err: unknown) => {
+    console.error('[ai-agent-for-live-chat] could not remember the products discussed', err)
+  })
 }
 
 const LINKS_NOTE =
@@ -78,8 +93,9 @@ export const findBySkuTool = defineTool({
     additionalProperties: false,
   },
   input: z.object({ sku: z.string().trim().min(1).max(80) }),
-  async handler(_ctx, args) {
+  async handler(ctx, args) {
     const { hits, note } = await findBySku(args.sku)
+    await remember(ctx, fromSkuHits(hits))
     return { ok: true, products: hits, note }
   },
 })
@@ -103,8 +119,9 @@ export const getProductTool = defineTool({
     quantity: z.number().int().positive().max(100_000).optional(),
   }),
   guidance: 'When they name an option, call get_product with it in options and quote that variation\'s exact price; quote a range only while they have not chosen. When they give a quantity, pass it and use quantityQuote: never do the sum yourself.',
-  async handler(_ctx, args) {
+  async handler(ctx, args) {
     const detail = await getProductDetail(args.product_id, blankToNull(args.options), args.quantity ?? null)
+    if (detail) await remember(ctx, fromProductDetail(detail))
     return detail ? { ok: true, product: detail } : { ok: false, message: 'That product could not be found. Search again.' }
   },
 })

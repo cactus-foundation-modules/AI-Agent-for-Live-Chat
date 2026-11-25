@@ -113,6 +113,10 @@ export type ContextFacts = {
   orderChecksLocked?: boolean
   /** No more emails may go from this chat. */
   emailsUsedUp?: boolean
+  /** Whether the site can send a text (a provider is set up), and whether this
+   *  chat has used up its texts. Left out, nothing is said about texts. */
+  textingAvailable?: boolean
+  textsUsedUp?: boolean
 }
 
 /** "Tuesday 24 November 2026, 14:05" in UK time. */
@@ -159,6 +163,13 @@ export function contextNote(facts: ContextFacts): string {
   }
   if (facts.orderChecksLocked) lines.push('- Order checks are locked: too many did not match. Do not try another; offer a callback.')
   if (facts.emailsUsedUp) lines.push('- No more emails can be sent from this chat. Offer a callback instead.')
+  if (facts.textingAvailable === true) {
+    lines.push(facts.textsUsedUp
+      ? '- Texting is available on this site, but no more texts can be sent from this chat.'
+      : '- Texting is available: you may offer to text them links (send_text).')
+  } else if (facts.textingAvailable === false) {
+    lines.push('- Texting is not set up on this site: never offer a text.')
+  }
   if (facts.staff) lines.push('- This is a colleague testing you. Answer exactly as you would a visitor.')
   if (facts.callbackWanted) lines.push('- They are owed a callback: apologise once for the wait and ask for their name and email address, then call save_callback.')
   return lines.join('\n')
