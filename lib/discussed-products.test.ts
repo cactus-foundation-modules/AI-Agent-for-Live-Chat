@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  addressKey,
+  markLinked,
+  shownByTool,
   MAX_DISCUSSED_PRODUCTS,
   addressOf,
   addressWithChoice,
@@ -23,17 +26,18 @@ const chair: DiscussedProduct = { id: 'chair', url: 'https://shop.test/chair', p
 
 describe('what the product tools record', () => {
   it('get_product: the one variation that matched, else the product itself', () => {
-    expect(fromProductDetail({ id: 'desk', url: desk.url, matchingVariations: [{ id: 'desk-black', url: deskBlack.url }] })).toEqual([deskBlack])
-    expect(fromProductDetail({ id: 'desk', url: desk.url, matchingVariations: null })).toEqual([desk])
-    expect(fromProductDetail({ id: 'desk', url: desk.url, matchingVariations: [{ id: 'a', url: null }, { id: 'b', url: null }] })).toEqual([desk])
+    const named = { id: 'desk', name: 'Desk', url: desk.url }
+    expect(fromProductDetail({ ...named, matchingVariations: [{ id: 'desk-black', url: deskBlack.url }] })).toEqual([{ ...deskBlack, name: 'Desk' }])
+    expect(fromProductDetail({ ...named, matchingVariations: null })).toEqual([{ ...desk, name: 'Desk' }])
+    expect(fromProductDetail({ ...named, matchingVariations: [{ id: 'a', url: null }, { id: 'b', url: null }] })).toEqual([{ ...desk, name: 'Desk' }])
   })
 
   it('find_by_sku: the one hit, or the one exact hit, never a guess among several', () => {
-    const variation = { productId: 'desk', url: deskBlack.url, match: 'exact' as const, variation: { id: 'desk-black' } }
-    const close = { productId: 'chair', url: chair.url, match: 'close' as const, variation: null }
-    expect(fromSkuHits([variation])).toEqual([deskBlack])
-    expect(fromSkuHits([variation, close])).toEqual([deskBlack])
-    expect(fromSkuHits([close])).toEqual([chair])
+    const variation = { productId: 'desk', name: 'Desk', url: deskBlack.url, match: 'exact' as const, variation: { id: 'desk-black' } }
+    const close = { productId: 'chair', name: 'Chair', url: chair.url, match: 'close' as const, variation: null }
+    expect(fromSkuHits([variation])).toEqual([{ ...deskBlack, name: 'Desk' }])
+    expect(fromSkuHits([variation, close])).toEqual([{ ...deskBlack, name: 'Desk' }])
+    expect(fromSkuHits([close])).toEqual([{ ...chair, name: 'Chair' }])
     expect(fromSkuHits([close, { ...close, productId: 'stool' }])).toEqual([])
     expect(fromSkuHits([])).toEqual([])
   })
@@ -88,15 +92,17 @@ describe('productsToSend (the live-site bug: a note with no products)', () => {
   })
 })
 
+const urls = (links: ReadonlyArray<{ url: string }>) => links.map((link) => link.url)
+
 describe('productLinksToSend', () => {
   it('links only products the chat recorded, the named ones first', () => {
-    expect(productLinksToSend(['chair', 'invented'], [chair, deskBlack], 3)).toEqual([chair.url])
-    expect(productLinksToSend(['desk'], [chair, deskBlack], 3)).toEqual([deskBlack.url])
+    expect(urls(productLinksToSend(['chair', 'invented'], [chair, deskBlack], 3))).toEqual([chair.url])
+    expect(urls(productLinksToSend(['desk'], [chair, deskBlack], 3))).toEqual([deskBlack.url])
   })
 
   it('falls back to the newest recorded when none named are known', () => {
-    expect(productLinksToSend(['invented'], [chair, deskBlack], 3)).toEqual([deskBlack.url, chair.url])
-    expect(productLinksToSend([], [chair, deskBlack, { id: 'x', url: null, parentId: null }], 1)).toEqual([deskBlack.url])
+    expect(urls(productLinksToSend(['invented'], [chair, deskBlack], 3))).toEqual([deskBlack.url, chair.url])
+    expect(urls(productLinksToSend([], [chair, deskBlack, { id: 'x', url: null, parentId: null }], 1))).toEqual([deskBlack.url])
   })
 })
 
@@ -149,7 +155,46 @@ describe('a chosen delivery service', () => {
     expect(addressOf(chair)).toBe(chair.url)
     expect(addressWithChoice('desk-black', deskBlack.url, chosen)).toBe('https://shop.test/desk?colour=black&delivery-service=express')
     expect(addressWithChoice('desk', desk.url, chosen)).toBe(desk.url)
-    expect(productLinksToSend([], chosen, 3)).toEqual(['https://shop.test/desk?colour=black&delivery-service=express', chair.url])
+    expect(urls(productLinksToSend([], chosen, 3))).toEqual(['https://shop.test/desk?colour=black&delivery-service=express', chair.url])
     expect(chosenDeliveries(chosen)).toEqual(new Map([['desk-black', express]]))
+  })
+})
+
+describe('what the assistant showed (the live-site bug: an email of the wrong products)', () => {
+  const rowan = { id: 'rowan-green', url: 'https://shop.test/rowan?colour=myrrh-green', parentId: 'rowan', name: 'Rowan' }
+  const cabinet = { id: 'qube', url: 'https://shop.test/qube', parentId: null, name: 'Qube' }
+  const crew = { id: 'crew-green', url: 'https://shop.test/crew?upholstery-colour=myrrh-green', parentId: 'crew', name: 'Crew 2' }
+
+  it('compares addresses however they are spelled', () => {
+    expect(addressKey('https://www.Shop.test/crew/?b=2&a=1&delivery-service=express&utm_source=x')).toBe('shop.test/crew?a=1&b=2')
+    expect(addressKey('not an address')).toBeNull()
+  })
+
+  it('marks what a reply shows, adding a search result the chat never recorded', () => {
+    const shown = shownByTool([{ id: 'qube', name: 'Qube', url: cabinet.url }])
+    const after = markLinked([rowan, crew], shown, `The Qube is the cheapest.\n\nhttps://shop.test/qube.`)
+    expect(after).toEqual([rowan, crew, { ...cabinet, linked: true }])
+  })
+
+  it('leaves the record alone when the reply shows nothing it knows', () => {
+    expect(markLinked([rowan], [], 'No links here.')).toEqual([rowan])
+    expect(markLinked([rowan], [], 'See https://elsewhere.example/x')).toEqual([rowan])
+  })
+
+  it('sends only what was shown when nothing is named, newest first, with names for a text', () => {
+    let list = markLinked([rowan, crew], [], crew.url)
+    list = markLinked(list, shownByTool([{ id: 'qube', name: 'Qube', url: cabinet.url }]), cabinet.url)
+    expect(productsToSend([], list, 5)).toEqual(['qube', 'crew-green'])
+    expect(productLinksToSend([], list, 3)).toEqual([{ label: 'Qube', url: cabinet.url }, { label: 'Crew 2', url: crew.url }])
+  })
+
+  it('carries "shown" and the name from a listing to the variation later chosen for it', () => {
+    const desk = { id: 'desk', url: 'https://shop.test/desk', parentId: null, name: 'Oslo Air', linked: true }
+    const chosen = rememberProducts([desk], [{ id: 'desk-120-black', url: 'https://shop.test/desk?width=120cm', parentId: 'desk' }])
+    expect(chosen).toEqual([{ id: 'desk-120-black', url: 'https://shop.test/desk?width=120cm', parentId: 'desk', name: 'Oslo Air', linked: true }])
+  })
+
+  it('reads the name and the shown mark back from storage', () => {
+    expect(parseDiscussedProducts([{ ...crew, linked: true }, { ...cabinet, linked: 'yes' }])).toEqual([{ ...crew, linked: true }, cabinet])
   })
 })

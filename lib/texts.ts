@@ -8,7 +8,8 @@ import { getSettings } from './settings'
 import { phonesOnOrders } from './shop/order-queries'
 import { sendableLinks } from './shop/site-content'
 import { pickLinks, unknownLinksMessage } from './shop/site-links'
-import { MAX_TEXT_LINKS, composeText, pickTextRecipient } from './text-message'
+import { getSiteUrlOrNull } from '@/lib/config/env'
+import { MAX_TEXT_LINKS, composeText, pickTextRecipient, textSignOff, type TextLinkLine } from './text-message'
 import type { ToolContext, ToolResult } from './tools/registry'
 
 // ---------------------------------------------------------------------------
@@ -63,13 +64,13 @@ type Content = { kind: 'text'; body: string; links: number; leftOut: string } | 
 /** The words and links of the text, or why there are none. */
 async function content(ctx: ToolContext, args: TextArgs, orderNumber: string | null): Promise<Content> {
   const settings = await getSettings()
-  const signOff = settings.businessName.trim()
+  const signOff = textSignOff(settings.businessName, getSiteUrlOrNull())
   if (args.what === 'order_link') {
     if (!orderNumber) return { kind: 'refuse', message: WHICH_ORDER }
     const url = orderTrackingUrl(orderNumber, await getShopConfigCached())
     if (!url) return { kind: 'refuse', message: 'Order links are not switched on for this shop, so none can be texted. Offer a callback instead.' }
     const note = args.note || `Here is the page for your order ${orderNumber}, where you can follow its progress and report a problem.`
-    return { kind: 'text', body: composeText(note, [url], signOff), links: 1, leftOut: '' }
+    return { kind: 'text', body: composeText(note, [{ label: null, url }], signOff), links: 1, leftOut: '' }
   }
   const note = (args.note ?? '').trim()
   if (!note) return { kind: 'refuse', message: 'Write a short note of what the text is for and try again.' }
@@ -80,7 +81,11 @@ async function content(ctx: ToolContext, args: TextArgs, orderNumber: string | n
   if (args.linkIds.length > 0 && picked.links.length === 0) {
     return { kind: 'refuse', message: `Nothing was sent. ${unknownLinksMessage(picked.unknown)}` }
   }
-  const links = [...new Set([...picked.links.map((link) => link.url), ...productLinksToSend(args.productIds, ctx.products, MAX_TEXT_LINKS)])].slice(0, MAX_TEXT_LINKS)
+  const links: TextLinkLine[] = []
+  for (const link of [...picked.links.map((page) => ({ label: page.label, url: page.url })), ...productLinksToSend(args.productIds, ctx.products, MAX_TEXT_LINKS)]) {
+    if (!links.some((kept) => kept.url === link.url)) links.push(link)
+  }
+  links.splice(MAX_TEXT_LINKS)
   return { kind: 'text', body: composeText(note, links, signOff), links: links.length, leftOut: unknownLinksMessage(picked.unknown) }
 }
 

@@ -57,7 +57,8 @@ describe('contextNote', () => {
     expect(note).toContain('Name given: Sam')
     expect(note).toContain('No colleague is online')
     expect(note).toContain('colleague testing you')
-    expect(note).toContain('owed a callback')
+    expect(note).toContain('could not be reached for them earlier')
+    expect(note).toContain('offer, once')
   })
 
   it('lists the delivery services chosen in this chat with the addresses carrying them', () => {

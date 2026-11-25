@@ -7,8 +7,11 @@ import {
   fromSkuHits,
   recordedEntry,
   rememberProducts,
+  shownByTool,
   type DiscussedProduct,
 } from '../discussed-products'
+import { getSiteUrlOrNull } from '@/lib/config/env'
+import { looksLikeLink, readShopLink } from '../shop/shop-link'
 import { saveDiscussedProducts } from '../order-state'
 import { matchService, serviceMissMessage, timingMenus } from '../shop/delivery-choice'
 import { lookupFaqs } from '../shop/faq-queries'
@@ -59,6 +62,27 @@ async function remember(ctx: ToolContext, found: readonly DiscussedProduct[]): P
   })
 }
 
+/** What a product tool handed the model, kept for the turn so the products
+ *  its reply shows can be marked as shown (lib/discussed-products.ts). */
+function noteShown(ctx: ToolContext, found: readonly DiscussedProduct[]): void {
+  ctx.shown = [...ctx.shown, ...found].slice(-60)
+}
+
+function siteHost(): string | null {
+  const site = getSiteUrlOrNull()
+  if (!site) return null
+  try {
+    return new URL(site).hostname
+  } catch {
+    return null
+  }
+}
+
+/** A link as readShopLink takes it: "www.shop.co.uk/..." gets its scheme. */
+function asLink(value: string): string {
+  return /^www\./i.test(value.trim()) ? `https://${value.trim()}` : value.trim()
+}
+
 const LINKS_NOTE =
   'pageUrl is the page or article itself; links are the links written in that passage. You may write one out in full, on its own, if they would find it useful. To email one, pass its id (or the address exactly) in link_ids to email_summary.'
 
@@ -76,24 +100,68 @@ function writtenPassage(passage: Passage): Record<string, unknown> {
 
 export const searchProductsTool = defineTool({
   name: 'search_products',
-  description: "Search the shop's products by what the visitor wants (for example 'height adjustable desk' or 'black office chair'). Use it to answer product questions and to suggest products. Returns up to six matches, each with its page address (url), name, price, stock and a short description.",
+  description: "Search the shop's products by what the visitor wants (for example 'height adjustable desk' or 'green office chair'). Words are matched against names, descriptions, categories and each product's variations (colours, sizes), so a colour finds every product sold in it. Returns up to six matches, each with its page address (url), name, price, stock and a short description; where the words picked out a variation (a colour, a size), `variation` is the cheapest one that can be bought, with its own price, stock and url. Leaves out what cannot be bought now unless in_stock_only is false.",
   parameters: {
     type: 'object',
     properties: {
-      query: text('What the visitor is looking for, in a few plain words.'),
+      query: text('What the visitor is looking for, in a few plain words. May be empty when link or category is given.'),
       max_price: { type: 'number', description: 'Optional. The most the visitor wants to spend, in pounds.' },
+      sort: { type: 'string', enum: ['relevance', 'cheapest'], description: 'cheapest: lists the cheapest first, across every match. Use it whenever they ask for the cheapest, the lowest price or something cheap.' },
+      in_stock_only: { type: 'boolean', description: 'Defaults to true: products (and colours or sizes) that cannot be bought right now are left out. Pass false only when they ask about one particular product they named, or ask what is out of stock.' },
+      category: text('Optional. A category name or slug, to search only that category and those under it.'),
+      link: text('Optional. A link to one of the shop\'s category pages the visitor sent, exactly as they sent it. Its category, filters (such as a colour) and sort are used.'),
     },
     required: ['query'],
     additionalProperties: false,
   },
   input: z.object({
-    query: z.string().trim().min(1).max(200),
+    query: z.string().trim().max(200),
     max_price: z.number().positive().max(1_000_000).optional(),
+    sort: z.enum(['relevance', 'cheapest']).optional(),
+    in_stock_only: z.boolean().optional(),
+    category: z.string().trim().max(200).optional(),
+    link: z.string().trim().max(1000).optional(),
   }),
-  guidance: 'If search_products finds nothing, search again with a different word for the same thing (shorter, a synonym, another spelling) before saying the shop does not sell it.',
+  summarise: (args) => [
+    args.query ? `query: ${args.query}` : '',
+    args.category ? `category: ${args.category}` : '',
+    args.link ? 'from a link' : '',
+    args.sort === 'cheapest' ? 'cheapest first' : '',
+    args.in_stock_only === false ? 'including out of stock' : '',
+  ].filter(Boolean).join(', '),
+  guidance: 'If search_products finds nothing, search again with a different word for the same thing (shorter, a synonym, another spelling) before saying the shop does not sell it. For "the cheapest ..." always pass sort cheapest. When the visitor sends a link to one of the shop\'s category pages, pass it in link; for a product page, pass it to get_product as product_id. Never say you cannot open or check a link to this shop.',
   async handler(ctx, args) {
-    const { products, note } = await searchProducts(args.query, args.max_price ?? null)
-    return { ok: true, products: products.map((product) => ({ ...product, url: addressWithChoice(product.id, product.url, ctx.products) })), note }
+    let query = args.query
+    let category = blankToNull(args.category)
+    let sort = args.sort === 'cheapest' ? ('price' as const) : ('relevance' as const)
+    if (args.link) {
+      const link = readShopLink(asLink(args.link), siteHost())
+      if (link.kind === 'product') {
+        return { ok: false, message: 'That link is a product page: call get_product with the link as product_id instead.' }
+      }
+      if (link.kind === 'other') {
+        return { ok: false, message: 'That is not a link to one of this shop\'s category pages. Search with words instead.' }
+      }
+      category = link.category
+      query = [query, ...link.words].filter(Boolean).join(' ')
+      if (link.sort === 'price') sort = 'price'
+    }
+    const { products, note } = await searchProducts(query, {
+      maxPrice: args.max_price ?? null,
+      inStockOnly: args.in_stock_only ?? true,
+      sort,
+      category,
+    })
+    noteShown(ctx, shownByTool(products.map((product) => ({ ...product, variations: product.variation ? [product.variation] : null }))))
+    return {
+      ok: true,
+      products: products.map((product) => ({
+        ...product,
+        url: addressWithChoice(product.id, product.url, ctx.products),
+        variation: product.variation ? { ...product.variation, url: addressWithChoice(product.variation.id, product.variation.url, ctx.products) } : null,
+      })),
+      note,
+    }
   },
 })
 
@@ -110,6 +178,7 @@ export const findBySkuTool = defineTool({
   async handler(ctx, args) {
     const { hits, note } = await findBySku(args.sku)
     await remember(ctx, fromSkuHits(hits))
+    noteShown(ctx, hits.map((hit) => ({ id: hit.variation?.id ?? hit.productId, url: hit.url, parentId: hit.variation ? hit.productId : null, name: hit.name })))
     const products = hits.map((hit) => ({ ...hit, url: addressWithChoice(hit.variation?.id ?? hit.productId, hit.url, ctx.products) }))
     return { ok: true, products, note }
   },
@@ -121,7 +190,7 @@ export const getProductTool = defineTool({
   parameters: {
     type: 'object',
     properties: {
-      product_id: text('The id exactly as returned by search_products or find_by_sku.'),
+      product_id: text('The id exactly as returned by search_products or find_by_sku, or a link to the product\'s page that the visitor sent (its options are read from it).'),
       quantity: { type: 'number', description: 'Optional. How many they want, as a whole number. Returns quantityQuote: the unit price, the exact total and whether there is enough stock. Always pass it when they give a quantity, instead of working the total out yourself.' },
       options: text('Optional. The options they have chosen, in their own words, for example "black high back" or "1600 walnut". Returns matchingVariations: each fitting variation with its own id, url and exact price. Pass it whenever they have named any option, and again with more words if several still fit.'),
     },
@@ -129,15 +198,26 @@ export const getProductTool = defineTool({
     additionalProperties: false,
   },
   input: z.object({
-    product_id: z.string().trim().min(1).max(100),
-    options: z.string().trim().max(200).optional(),
+    product_id: z.string().trim().min(1).max(1000),
+    options: z.string().trim().max(300).optional(),
     quantity: z.number().int().positive().max(100_000).optional(),
   }),
-  guidance: 'When they name an option, call get_product with it in options and quote that variation\'s exact price; quote a range only while they have not chosen. When they give a quantity, pass it and use quantityQuote: never do the sum yourself.',
+  summarise: (args) => `product_id: ${args.product_id.slice(0, 120)}${args.options ? `, options: ${args.options.slice(0, 120)}` : ''}`,
+  guidance: 'When they name an option, call get_product with it in options and quote that variation\'s exact price; quote a range only while they have not chosen. Pass EVERY option they have chosen so far in this chat, including ones from earlier messages (a finish from their first message still counts), in their words or the shop\'s: the matching forgives "no" for "without" and sets aside words that are not options. When they give a quantity, pass it and use quantityQuote: never do the sum yourself.',
   async handler(ctx, args) {
-    const detail = await getProductDetail(args.product_id, blankToNull(args.options), args.quantity ?? null)
-    if (!detail) return { ok: false, message: 'That product could not be found. Search again.' }
+    let reference = args.product_id
+    let options = blankToNull(args.options)
+    if (looksLikeLink(reference)) {
+      const link = readShopLink(asLink(reference), siteHost())
+      if (link.kind === 'category') return { ok: false, message: 'That link is a category page: call search_products with it in link instead.' }
+      if (link.kind === 'other') return { ok: false, message: 'That is not a link to one of this shop\'s product pages. Search for the product instead.' }
+      reference = link.slug
+      options = [link.options, options].filter(Boolean).join(' ') || null
+    }
+    const detail = await getProductDetail(reference, options, args.quantity ?? null)
+    if (!detail) return { ok: false, message: 'That product could not be found. Search for it with search_products and use the id it returns.' }
     await remember(ctx, fromProductDetail(detail))
+    noteShown(ctx, shownByTool([{ id: detail.id, name: detail.name, url: detail.url, variations: detail.matchingVariations }]))
     const product = {
       ...detail,
       url: addressWithChoice(detail.id, detail.url, ctx.products),

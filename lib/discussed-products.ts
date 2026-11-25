@@ -28,6 +28,17 @@ import { withDeliveryParam } from './shop/product-links'
 // quote each ask the shop again, so a service since withdrawn quietly drops
 // off them.
 //
+// What the assistant actually SHOWED counts most. Learned on a live chat: asked
+// to "email me all the products we chatted about", it emailed a chair it had
+// only mentioned to say it was out of stock (and the visitor had moved on
+// from), left out the filing cabinet it had linked (a search result, so never
+// recorded) and sent the desk without the options chosen. So every product
+// address in a reply the assistant sends is matched against what the tools
+// returned that turn and the chat's record (markLinked): those entries are
+// marked `linked` and added if missing, and when a note or a text is sent
+// without naming products, the linked ones are what goes. Each entry keeps its
+// name too, so a text can say what each link is.
+//
 // Pure: the saving is lib/order-state.ts saveDiscussedProducts.
 // ---------------------------------------------------------------------------
 
@@ -46,6 +57,10 @@ export type DiscussedProduct = {
   /** The delivery service the visitor chose for it: the shop's key for it
    *  (`express`) and its name as the shop gives it. Absent when none was. */
   delivery?: ChosenDelivery
+  /** The product's name as the shop gives it, for a text's link. */
+  name?: string
+  /** True once the assistant has shown it (its address in a reply). */
+  linked?: boolean
 }
 
 export type ChosenDelivery = { key: string; label: string }
@@ -68,7 +83,15 @@ export function parseDiscussedProducts(value: unknown): DiscussedProduct[] {
     const id = text(record.id)
     if (!id) continue
     const delivery = parseDelivery(record.delivery)
-    entries.push({ id, url: text(record.url), parentId: text(record.parentId), ...(delivery ? { delivery } : {}) })
+    const name = text(record.name)
+    entries.push({
+      id,
+      url: text(record.url),
+      parentId: text(record.parentId),
+      ...(delivery ? { delivery } : {}),
+      ...(name ? { name: name.slice(0, 200) } : {}),
+      ...(record.linked === true ? { linked: true } : {}),
+    })
   }
   return rememberProducts([], entries)
 }
@@ -94,12 +117,70 @@ export function rememberProducts(list: readonly DiscussedProduct[], found: reado
   for (const entry of found) {
     const chosen = entry.parentId === null ? [...out].reverse().find((kept) => kept.parentId === entry.id) : undefined
     const same = out.find((kept) => kept.id === entry.id)
+    // A variation chosen for a listing already shown is what was shown.
+    const parent = entry.parentId ? out.find((kept) => kept.id === entry.parentId) : undefined
     const delivery = entry.delivery ?? same?.delivery
-    const newest = chosen ?? (delivery ? { ...entry, delivery } : entry)
+    const name = entry.name ?? same?.name ?? parent?.name
+    const linked = entry.linked === true || same?.linked === true || parent?.linked === true
+    const fresh: DiscussedProduct = {
+      ...entry,
+      ...(delivery ? { delivery } : {}),
+      ...(name ? { name } : {}),
+      ...(linked ? { linked: true } : {}),
+    }
+    const newest = chosen ? { ...chosen, ...(linked ? { linked: true } : {}) } : fresh
     out = out.filter((kept) => kept.id !== newest.id && kept.id !== newest.parentId)
     out.push(newest)
   }
   return out.slice(-MAX_DISCUSSED_PRODUCTS)
+}
+
+/** A page address reduced to what two spellings of it share: no scheme, no
+ *  "www.", no trailing slash, the delivery service and tracking left off and
+ *  the options in a fixed order. Pure. */
+export function addressKey(address: string): string | null {
+  let url: URL
+  try {
+    url = new URL(address)
+  } catch {
+    return null
+  }
+  const params = [...url.searchParams.entries()]
+    .filter(([key]) => key !== 'delivery-service' && !key.startsWith('utm_'))
+    .map(([key, value]) => `${key.toLowerCase()}=${value.toLowerCase()}`)
+    .sort()
+  return `${url.hostname.replace(/^www\./, '').toLowerCase()}${url.pathname.replace(/\/+$/, '').toLowerCase()}${params.length > 0 ? `?${params.join('&')}` : ''}`
+}
+
+/** Web addresses written in a reply, as keys. */
+function addressesIn(reply: string): Set<string> {
+  const keys = new Set<string>()
+  for (const match of reply.matchAll(/https?:\/\/[^\s<>()"']+/g)) {
+    const key = addressKey(match[0].replace(/[.,;:!?]+$/, ''))
+    if (key) keys.add(key)
+  }
+  return keys
+}
+
+/**
+ * The record after a reply: every entry whose address the reply shows, from
+ * what the tools returned this turn (`shown`) or already recorded, is marked
+ * linked and moved to the end as the newest; nothing else changes. A reply
+ * that shows nothing returns the list as it was. Pure.
+ */
+export function markLinked(list: readonly DiscussedProduct[], shown: readonly DiscussedProduct[], reply: string): DiscussedProduct[] {
+  const keys = addressesIn(reply)
+  if (keys.size === 0) return [...list]
+  const hit = (entry: DiscussedProduct) => {
+    const key = entry.url ? addressKey(entry.url) : null
+    return key !== null && keys.has(key)
+  }
+  const found = new Map<string, DiscussedProduct>()
+  for (const entry of [...shown, ...list]) {
+    if (hit(entry) && !found.has(entry.id)) found.set(entry.id, { ...entry, linked: true })
+  }
+  if (found.size === 0) return [...list]
+  return rememberProducts(list, [...found.values()])
 }
 
 /** The entry a product id means in this chat: the product itself, or for a
@@ -142,19 +223,36 @@ export function chosenDeliveries(list: readonly DiscussedProduct[]): Map<string,
  *  variation that matched exactly, else the product itself. */
 export function fromProductDetail(detail: {
   id: string
+  name: string
   url: string | null
   matchingVariations: ReadonlyArray<{ id: string; url: string | null }> | null
 }): DiscussedProduct[] {
   const variations = detail.matchingVariations ?? []
   const only = variations.length === 1 ? variations[0] : undefined
-  if (only) return [{ id: only.id, url: only.url, parentId: detail.id }]
-  return [{ id: detail.id, url: detail.url, parentId: null }]
+  if (only) return [{ id: only.id, url: only.url, parentId: detail.id, name: detail.name }]
+  return [{ id: detail.id, url: detail.url, parentId: null, name: detail.name }]
+}
+
+/** Every address a product tool handed the model, as entries that can be
+ *  marked linked once a reply shows one: the product, and each variation
+ *  with its own address. Not recorded until then. Pure. */
+export function shownByTool(products: ReadonlyArray<{
+  id: string
+  name: string
+  url: string | null
+  variations?: ReadonlyArray<{ id: string; url: string | null }> | null
+}>): DiscussedProduct[] {
+  return products.flatMap((product) => [
+    { id: product.id, url: product.url, parentId: null, name: product.name },
+    ...(product.variations ?? []).map((variation) => ({ id: variation.id, url: variation.url, parentId: product.id, name: product.name })),
+  ])
 }
 
 /** What find_by_sku found: the code's one hit, or its one exact hit among
  *  close ones. Several equally good hits are not a match, so none is kept. */
 export function fromSkuHits(hits: ReadonlyArray<{
   productId: string
+  name: string
   url: string | null
   match: 'exact' | 'close'
   variation: { id: string } | null
@@ -163,32 +261,52 @@ export function fromSkuHits(hits: ReadonlyArray<{
   const hit = hits.length === 1 ? hits[0] : exact.length === 1 ? exact[0] : undefined
   if (!hit) return []
   return hit.variation
-    ? [{ id: hit.variation.id, url: hit.url, parentId: hit.productId }]
-    : [{ id: hit.productId, url: hit.url, parentId: null }]
+    ? [{ id: hit.variation.id, url: hit.url, parentId: hit.productId, name: hit.name }]
+    : [{ id: hit.productId, url: hit.url, parentId: null, name: hit.name }]
+}
+
+/** The record a note or text falls back on when the model names no product,
+ *  newest first: what the assistant showed, when it showed anything, else
+ *  everything. */
+function fallbackPool(recorded: readonly DiscussedProduct[]): DiscussedProduct[] {
+  const linked = recorded.filter((entry) => entry.linked)
+  return (linked.length > 0 ? linked : [...recorded]).reverse()
 }
 
 /**
  * The products to list in an email or a text: the ids the model passed when it
- * passed any, else the chat's own record, newest first. A listing the model
- * names whose variation the chat settled on becomes that variation, so the
- * email is for what was chosen. Repeats go and at most `max` come back. Pure.
+ * passed any, else the chat's own record (what the assistant showed, when it
+ * showed anything), newest first. A
+ * listing the model names whose variation the chat settled on becomes that
+ * variation, so the email is for what was chosen. Repeats go and at most `max`
+ * come back. Pure.
  */
 export function productsToSend(given: readonly string[], recorded: readonly DiscussedProduct[], max: number): string[] {
   const chosen = new Map(recorded.filter((entry) => entry.parentId).map((entry) => [entry.parentId as string, entry.id]))
   const wanted = given.length > 0
     ? given.map((id) => id.trim()).filter(Boolean).map((id) => chosen.get(id) ?? id)
-    : [...recorded].reverse().map((entry) => entry.id)
+    : fallbackPool(recorded).map((entry) => entry.id)
   return [...new Set(wanted)].slice(0, Math.max(0, max))
 }
 
-/** The page addresses for a text: only products the chat recorded (whose
- *  addresses the tools built), the ones named when any are, else the newest,
- *  each carrying the delivery chosen for it. Pure. */
-export function productLinksToSend(given: readonly string[], recorded: readonly DiscussedProduct[], max: number): string[] {
+export type TextLink = { label: string | null; url: string }
+
+/** The links for a text: only products the chat recorded (whose addresses the
+ *  tools built), the ones named when any are, else what the assistant showed,
+ *  each with its name and carrying the delivery chosen for it. Pure. */
+export function productLinksToSend(given: readonly string[], recorded: readonly DiscussedProduct[], max: number): TextLink[] {
   const byId = new Map(recorded.map((entry) => [entry.id, entry]))
   const named = productsToSend(given, recorded, recorded.length + given.length)
     .map((id) => byId.get(id))
     .filter((entry): entry is DiscussedProduct => !!entry)
-  const pool = named.length > 0 ? named : [...recorded].reverse()
-  return [...new Set(pool.map(addressOf).filter((url): url is string => !!url))].slice(0, Math.max(0, max))
+  const pool = named.length > 0 ? named : fallbackPool(recorded)
+  const seen = new Set<string>()
+  const out: TextLink[] = []
+  for (const entry of pool) {
+    const url = addressOf(entry)
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    out.push({ label: entry.name ?? null, url })
+  }
+  return out.slice(0, Math.max(0, max))
 }

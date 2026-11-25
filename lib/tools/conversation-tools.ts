@@ -14,11 +14,29 @@ import { defineTool } from './registry'
 //
 // Every result says, in words the model can follow, what to tell the visitor
 // next. The model writes the reply; the tool decides what is true.
+//
+// Learned on a live chat: a visitor who was only cross about a wrong answer
+// had a colleague asked for five times, was offered a callback over and over
+// after saying no, and had two callbacks saved that they never asked for, one
+// announced as "I've passed this to the team" when it had not been. So a
+// colleague is fetched when somebody is asked for or only a person can help,
+// never because the visitor is unhappy with an answer (the fix is a better
+// answer); when nobody is in, a callback is offered, not taken; and a
+// callback is saved only with the visitor's own yes, which must be words they
+// actually typed in this chat.
 // ---------------------------------------------------------------------------
+
+/** Whether the visitor really typed the words given as their agreement. Case,
+ *  spacing and punctuation aside, they must appear in what they wrote. Pure. */
+export function visitorTyped(visitorText: string, said: string): boolean {
+  const plain = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  const words = plain(said)
+  return words.length > 0 && ` ${plain(visitorText)} `.includes(` ${words} `)
+}
 
 export const handToColleague = defineTool({
   name: 'hand_to_colleague',
-  description: 'Ask a colleague (a person at the shop) to take over this chat. Use it when the visitor asks for a person, is unhappy, or needs something you cannot do or answer. The result tells you what to say next.',
+  description: 'Ask a colleague (a person at the shop) to take over this chat. Use it only when the visitor asks for a person, or needs something only a person can do (change an order, decide a refund, agree a discount). Never because they are unhappy with an answer of yours: check again with your tools and give the right answer instead. The result tells you what to say next.',
   parameters: {
     type: 'object',
     properties: {
@@ -29,17 +47,16 @@ export const handToColleague = defineTool({
   },
   input: z.object({ reason: z.string().trim().min(1).max(300) }),
   summarise: (args) => `reason: ${args.reason}`,
-  guidance: 'If the visitor asks for a person, or is unhappy with you, call hand_to_colleague rather than arguing or apologising at length.',
+  guidance: 'If the visitor asks for a person, call hand_to_colleague. If they are unhappy because you got something wrong, say sorry once and put it right with your tools (search again, check the options again); do not fetch a colleague or offer a callback for that.',
   async handler(ctx) {
     if (ctx.row.state === 'waiting' || ctx.effects.handedOver) {
       return { ok: true, message: 'A colleague has already been asked to pick this chat up. Tell the visitor they will be with them shortly; do not promise a time.' }
     }
     if (!ctx.online) {
-      await setCallbackWanted(ctx.conversationId, true)
       return {
         ok: false,
         nobodyIn: true,
-        message: 'Nobody is in just now, so no colleague can pick this up. Say so plainly and briefly, and ask for their name and email address so a colleague can get back to them. When they give them, call save_callback.',
+        message: 'Nobody is in just now, so no colleague can pick this up. Nothing has been passed on. Say so in one short sentence and offer, once, to have a colleague get back to them by email. Only if they say yes, call save_callback with their words in visitor_agreed. If they say no or carry on with something else, drop it and do not offer again in this chat.',
       }
     }
     await askForColleague(ctx.conversationId)
@@ -73,18 +90,20 @@ export const flagNotGenuine = defineTool({
 
 export const saveCallbackTool = defineTool({
   name: 'save_callback',
-  description: 'Save the visitor\'s name and email address so a colleague can get back to them, with what it is about. Only once they have given an email address in this chat.',
+  description: 'Save the visitor\'s name and email address so a colleague can get back to them, with what it is about. Only when they asked for somebody to get back to them, or you offered it and they said yes; never otherwise.',
   parameters: {
     type: 'object',
     properties: {
+      visitor_agreed: { type: 'string', description: 'Their own words, copied exactly from their message, asking for somebody to get back to them or saying yes when you offered, for example "yes please". If they have not asked or said yes, do not call this tool.' },
       name: { type: 'string', description: 'Their name, as they gave it. Empty if they did not.' },
       email: { type: 'string', description: 'Their email address, exactly as they wrote it.' },
       about: { type: 'string', description: 'What they need, in a sentence or two, for the colleague who gets back to them.' },
     },
-    required: ['name', 'email', 'about'],
+    required: ['visitor_agreed', 'name', 'email', 'about'],
     additionalProperties: false,
   },
   input: z.object({
+    visitor_agreed: z.string().max(300).optional(),
     name: z.string().trim().max(120).default(''),
     email: z.string().trim().min(3).max(254),
     about: z.string().trim().max(1000).default(''),
@@ -92,6 +111,14 @@ export const saveCallbackTool = defineTool({
   // Who they are stays out of the log; the Callbacks tab has it.
   summarise: (args) => `about: ${args.about.slice(0, 80)}`,
   async handler(ctx, args) {
+    const agreed = args.visitor_agreed?.trim() ?? ''
+    if (agreed.replace(/[^\p{L}\p{N}]/gu, '').length < 2 || !visitorTyped(ctx.visitorText, agreed)) {
+      return {
+        ok: false,
+        saved: false,
+        message: 'Nothing was saved and nothing has been passed on: do not say it has. A callback is only saved when the visitor asked for one or said yes to your offer, in their own words. If they have not, carry on helping without offering one again.',
+      }
+    }
     if (!isPlausibleEmail(args.email)) {
       return { ok: false, message: 'That email address does not look complete. Ask them to check it and send it again.' }
     }
@@ -117,6 +144,6 @@ export const noteUnanswered = defineTool({
   summarise: (args) => `question: ${args.question}`,
   async handler(ctx, args) {
     await recordUnanswered(ctx.conversationId, args.question)
-    return { ok: true, message: 'Noted. Tell the visitor plainly you do not have that to hand, and offer to fetch a colleague or take their details for a callback.' }
+    return { ok: true, message: 'Noted. Tell the visitor plainly you do not have that to hand. You may offer, once in this chat, to have a colleague get back to them; if you have offered before, or they said no, do not offer again.' }
   },
 })

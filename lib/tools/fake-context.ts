@@ -23,6 +23,7 @@ export function fakeContext(over: Partial<ToolContext> = {}, state = 'auto'): To
     orders: { verified: [], failedChecks: 0, emailsSent: 0 },
     textsSent: 0,
     products: [],
+    shown: [],
     effects: noEffects(),
     ...over,
   }

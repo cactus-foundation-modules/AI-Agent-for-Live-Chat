@@ -178,6 +178,6 @@ export function contextNote(facts: ContextFacts): string {
     lines.push(`- Delivery chosen in this chat (show each of these products with this address, so its card carries the service): ${chosen.map((choice) => `${choice.label}: ${choice.url}`).join('; ')}.`)
   }
   if (facts.staff) lines.push('- This is a colleague testing you. Answer exactly as you would a visitor.')
-  if (facts.callbackWanted) lines.push('- They are owed a callback: apologise once for the wait and ask for their name and email address, then call save_callback.')
+  if (facts.callbackWanted) lines.push('- A colleague could not be reached for them earlier. Say sorry once for that and offer, once, to have somebody get back to them by email; save_callback only if they say yes. If they decline or move on, drop it.')
   return lines.join('\n')
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_TEXT_CHARS, cleanNote, composeText, mobilesTyped, pickTextRecipient, ukMobile, visitorWroteNumber } from './text-message'
+import { MAX_TEXT_CHARS, cleanNote, composeText, mobilesTyped, pickTextRecipient, textSignOff, ukMobile, visitorWroteNumber } from './text-message'
 
 // Which number a text may go to, and what it may say.
 
@@ -92,16 +92,52 @@ describe('what a text says', () => {
       .toBe('Call or email, see and. Thanks!')
   })
 
-  it('keeps every link whole and stays inside three segments', () => {
-    const links = ['https://shop.test/shop/products/air-lite-desk?frame-colour=black', 'https://shop.test/pages/delivery']
-    const body = composeText('word '.repeat(200), links, 'Deskwell')
+  it('keeps every link whole and stays inside the limit', () => {
+    const links = [
+      { label: 'Air Lite Desk', url: 'https://shop.test/shop/products/air-lite-desk?frame-colour=black' },
+      { label: 'Delivery', url: 'https://shop.test/pages/delivery' },
+    ]
+    const body = composeText('word '.repeat(200), links, 'Deskwell.co.uk')
     expect(body.length).toBeLessThanOrEqual(MAX_TEXT_CHARS)
-    for (const link of links) expect(body).toContain(link)
-    expect(body.endsWith('Deskwell')).toBe(true)
+    for (const link of links) expect(body).toContain(`${link.label}\n${link.url}`)
+    expect(body.endsWith('Deskwell.co.uk')).toBe(true)
     expect(body).toContain('…')
   })
 
+  it('puts each product\'s name above its link, a blank line between them (the live-site "garbled mess")', () => {
+    expect(composeText('Here are the products we talked about.', [
+      { label: 'Oslo Air Standing Desk', url: 'https://shop.test/oslo-air?width=120cm' },
+      { label: 'Crew 2 Chair', url: 'https://shop.test/crew-2' },
+      { label: null, url: 'https://shop.test/qube' },
+    ], 'Deskwell.co.uk')).toBe(
+      'Here are the products we talked about.\n\nOslo Air Standing Desk\nhttps://shop.test/oslo-air?width=120cm\n\nCrew 2 Chair\nhttps://shop.test/crew-2\n\nhttps://shop.test/qube\n\nDeskwell.co.uk',
+    )
+  })
+
+  it('drops the names, never an address, when the links alone nearly fill it', () => {
+    const long = (n: number) => ({ label: `Product number ${n} with a long name`, url: `https://shop.test/${'x'.repeat(170)}${n}` })
+    const body = composeText('Hello', [long(1), long(2), long(3)], 'Deskwell.co.uk')
+    expect(body.length).toBeLessThanOrEqual(MAX_TEXT_CHARS)
+    expect(body).not.toContain('Product number')
+    for (const n of [1, 2, 3]) expect(body).toContain(`${'x'.repeat(170)}${n}`)
+  })
+
   it('leaves a short note as it is', () => {
-    expect(composeText('Here are the desks.', ['https://shop.test/a'], 'Deskwell')).toBe('Here are the desks.\n\nhttps://shop.test/a\nDeskwell')
+    expect(composeText('Here are the desks.', [{ label: null, url: 'https://shop.test/a' }], 'Deskwell')).toBe('Here are the desks.\n\nhttps://shop.test/a\n\nDeskwell')
+  })
+})
+
+describe('textSignOff', () => {
+  it('signs off with the site address, in the business\'s own capitals', () => {
+    expect(textSignOff('Deskwell', 'https://deskwell.co.uk')).toBe('Deskwell.co.uk')
+    expect(textSignOff('Deskwell', 'https://www.deskwell.co.uk/')).toBe('Deskwell.co.uk')
+    expect(textSignOff('Tiller Well', 'https://tillerwell.com')).toBe('TillerWell.com')
+    expect(textSignOff('Acme Ltd', 'https://shop.example')).toBe('shop.example')
+  })
+
+  it('falls back to the name with no usable address', () => {
+    expect(textSignOff('Deskwell', null)).toBe('Deskwell')
+    expect(textSignOff('Deskwell', 'http://localhost:3000')).toBe('Deskwell')
+    expect(textSignOff('Deskwell', 'nonsense')).toBe('Deskwell')
   })
 })

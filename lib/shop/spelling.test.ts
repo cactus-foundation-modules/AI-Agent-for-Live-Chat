@@ -60,4 +60,10 @@ describe('textHasWord', () => {
     expect(textHasWord('Lite Grey / Black', spellingVariants('light'))).toBe(true)
     expect(textHasWord('Dark Blue', spellingVariants('light'))).toBe(false)
   })
+
+  it('tries the root of an -en word only when the shop uses it', () => {
+    const vocabulary = new Set(['wood', 'desk'])
+    expect(expandSearchWords(['wooden'], vocabulary)[0]).toContain('wood')
+    expect(expandSearchWords(['garden'], vocabulary)[0]).not.toContain('gard')
+  })
 })

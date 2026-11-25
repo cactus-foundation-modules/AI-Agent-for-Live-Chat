@@ -56,6 +56,9 @@ export type ToolContext = {
   /** The products this chat has been about, newest last, kept up to date as
    *  the product tools run (lib/discussed-products.ts). */
   products: DiscussedProduct[]
+  /** Every product address the tools handed the model this turn, not yet
+   *  recorded: those the reply shows are marked as shown afterwards. */
+  shown: DiscussedProduct[]
   /** What the tools did this turn that the turn runner acts on afterwards. */
   effects: TurnEffects
 }

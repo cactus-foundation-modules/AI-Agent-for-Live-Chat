@@ -14,7 +14,7 @@ vi.mock('../handover', () => timer)
 vi.mock('../callbacks', () => callbacks)
 vi.mock('../unanswered', () => unanswered)
 
-const { flagNotGenuine, handToColleague, noteUnanswered, saveCallbackTool } = await import('./conversation-tools')
+const { flagNotGenuine, handToColleague, noteUnanswered, saveCallbackTool, visitorTyped } = await import('./conversation-tools')
 const { dispatchTool } = await import('./registry')
 // The 2a tools on their own: the full list (lib/tools/index.ts) reaches the
 // shop and is pinned in tool-list.test.ts.
@@ -38,13 +38,16 @@ describe('hand_to_colleague', () => {
     expect(String(done.result.message)).toMatch(/fetching a colleague/)
   })
 
-  it('with nobody in: hands nothing over and has the model take details instead', async () => {
+  it('with nobody in: hands nothing over, owes nothing, and has the model offer a callback once', async () => {
     const done = await dispatchTool(TOOLS, 'hand_to_colleague', '{"reason":"x"}', ctx({ online: false }))
     expect(done.ok).toBe(false)
     expect(done.result.nobodyIn).toBe(true)
     expect(chat.askForColleague).not.toHaveBeenCalled()
-    expect(db.setCallbackWanted).toHaveBeenCalledWith('c1', true)
-    expect(String(done.result.message)).toMatch(/name and email/)
+    // Learned live: flagging the chat as owed a callback had the model ask for
+    // details on every turn after, however often the visitor said no.
+    expect(db.setCallbackWanted).not.toHaveBeenCalled()
+    expect(String(done.result.message)).toMatch(/offer, once/)
+    expect(String(done.result.message)).toMatch(/Only if they say yes/)
   })
 
   it('does not ask twice', async () => {
@@ -63,9 +66,9 @@ describe('flag_not_genuine', () => {
 })
 
 describe('save_callback', () => {
-  it('saves a callback with a real-looking address', async () => {
-    const c = ctx()
-    const done = await dispatchTool(TOOLS, 'save_callback', '{"name":"Sam","email":"sam@example.com","about":"A quote for ten desks"}', c)
+  it('saves a callback with a real-looking address once the visitor has said yes', async () => {
+    const c = ctx({ visitorText: 'can someone email me about ten desks\nYes please!' })
+    const done = await dispatchTool(TOOLS, 'save_callback', '{"visitor_agreed":"yes please","name":"Sam","email":"sam@example.com","about":"A quote for ten desks"}', c)
     expect(done.ok).toBe(true)
     expect(callbacks.saveCallback).toHaveBeenCalledWith({ conversationId: 'c1', name: 'Sam', email: 'sam@example.com', about: 'A quote for ten desks', source: 'tool' })
     expect(db.setCallbackWanted).toHaveBeenCalledWith('c1', false)
@@ -74,9 +77,29 @@ describe('save_callback', () => {
   })
 
   it('refuses an address that is not one', async () => {
-    const done = await dispatchTool(TOOLS, 'save_callback', '{"name":"Sam","email":"sam at example","about":""}', ctx())
+    const done = await dispatchTool(TOOLS, 'save_callback', '{"visitor_agreed":"yes","name":"Sam","email":"sam at example","about":""}', ctx({ visitorText: 'yes' }))
     expect(done.ok).toBe(false)
     expect(callbacks.saveCallback).not.toHaveBeenCalled()
+  })
+
+  it('saves nothing without a yes, or with a yes the visitor never typed (the live-site bug)', async () => {
+    const visitorText = 'no im testing you\nstop requesting call backs which i havent asked for'
+    for (const agreed of [undefined, '', 'yes please']) {
+      const args = JSON.stringify({ ...(agreed === undefined ? {} : { visitor_agreed: agreed }), name: 'Chris', email: 'chris@example.com', about: 'x' })
+      const done = await dispatchTool(TOOLS, 'save_callback', args, ctx({ visitorText }))
+      expect(done.ok).toBe(false)
+      expect(String(done.result.message)).toMatch(/nothing has been passed on/)
+    }
+    expect(callbacks.saveCallback).not.toHaveBeenCalled()
+  })
+})
+
+describe('visitorTyped', () => {
+  it('finds the words in what the visitor wrote, case and punctuation aside, as whole words', () => {
+    expect(visitorTyped('Hi\nYes, please!', 'yes please')).toBe(true)
+    expect(visitorTyped('yesterday please', 'yes please')).toBe(false)
+    expect(visitorTyped('no thanks', 'yes')).toBe(false)
+    expect(visitorTyped('anything', '  ')).toBe(false)
   })
 })
 

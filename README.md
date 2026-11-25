@@ -52,9 +52,9 @@ In the order the model is shown them (append new ones at the end: the order is p
 | --- | --- |
 | `hand_to_colleague` | Asks a colleague to take the chat; with nobody in, takes details instead. |
 | `flag_not_genuine` | Steps back from abuse or time-wasting; the fixed lines take over. |
-| `save_callback` | Saves a name, email and what it is about for a colleague to get back to. |
+| `save_callback` | Saves a name, email and what it is about for a colleague to get back to. Only with the visitor's own yes (`visitor_agreed`), which must be words they typed in the chat. |
 | `note_unanswered` | Notes a question it could not answer. |
-| `search_products` | Searches the products; each comes back with its page address. |
+| `search_products` | Searches the products; each comes back with its page address. Words match names, categories, blurbs and each product's variation labels and attribute values (a colour), and a matching variation comes back with its own price, stock and address. Leaves out what cannot be bought unless `in_stock_only` is false; `sort: cheapest`; `category`; `link` (a pasted category page: its category, filters and sort). |
 | `find_by_sku` | Finds a product or one variation from its code. |
 | `get_product` | One product in full: options, the exact variation and its address, quantity totals, delivery by option, FAQs, accessories. |
 | `list_categories` | The shop's top-level categories. |
@@ -86,7 +86,12 @@ In the order the model is shown them (append new ones at the end: the order is p
 
 ### Products a chat was about
 
-`get_product` (when one variation matches exactly, that variation; otherwise the product) and `find_by_sku` (its one hit) remember what they found on the chat, newest last, ten at most (`aichat_conversations.discussed_products`, `lib/discussed-products.ts`). A search's results are not remembered. `email_summary` lists the products the model passes, swapping a listing for the variation the chat settled on, and when it passes none (or none the shop can show) it lists the remembered ones, newest first. `send_text` links only remembered products, whose page addresses the tools built.
+`get_product` (when one variation matches exactly, that variation; otherwise the product) and `find_by_sku` (its one hit) remember what they found on the chat, newest last, ten at most (`aichat_conversations.discussed_products`, `lib/discussed-products.ts`), with the product's name. After each reply, every product address the reply shows is matched against what the tools returned that turn and the record (`markLinked`): those entries are marked `linked` and added if missing, so a search result the assistant showed counts. `email_summary` lists the products the model passes, swapping a listing for the variation the chat settled on, and when it passes none (or none the shop can show) it lists the remembered ones the assistant showed (all of them if it showed none), newest first. `send_text` links only remembered products, whose page addresses the tools built, each under its name, and signs off with the site's address (`textSignOff`).
+
+### Finding products and options
+
+- `search_products` ranks against an in-memory index of every visible product (`loadSearchIndex`, ten minutes, like the vocabulary): name 4, variation labels and attribute values 3, category 2, blurb and description 1 (`lib/shop/search-rank.ts`). Every word must be found; failing that, the products with the most words, if at least half. For `sort: cheapest` only products whose meaningful words (not ones in more than half the catalogue) land in the name, variations or category are priced. The words a listing's variations carry pick out the cheapest buyable fitting variation (`lib/shop/search-variations.ts`). Prices and stock are read fresh.
+- `get_product` takes an id, a slug or a pasted product link (`lib/shop/shop-link.ts`, options read from its parameters). Options are matched by `lib/shop/variation-match.ts`: "no/not/w/o" fold to "without", words no variation carries are set aside and reported, a colour next to an option's name binds to it, a word said twice needs two options, and when nothing fits the nearest come back as `closest` with what they lack. Copied to the phone assistant.
 
 ### Delivery choices travel with the product
 

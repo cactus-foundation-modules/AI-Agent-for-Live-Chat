@@ -425,13 +425,41 @@ suite('ai-agent-for-live-chat SQL, against a real Postgres', () => {
       await client.query(`INSERT INTO "svr_variant_values" ("variant_id", "option_value_id") VALUES ($1, $2)`, [variant.rows[0]!.id, value.rows[0]!.id])
       const mat = await client.query<{ id: string }>(`INSERT INTO "shp_products" ("name", "slug", "type", "price", "status") VALUES ('Anti-fatigue Mat', 'mat', 'PHYSICAL', 40, 'ACTIVE') RETURNING "id"`)
       await client.query(`INSERT INTO "pad_links" ("id", "product_id", "addon_product_id") VALUES ('link-1', $1, $2)`, [deskId, mat.rows[0]!.id])
+      // Two chairs whose green lives only in a variation: one out of stock and
+      // unorderable, one that can be bought (the live-site green chair bug).
+      for (const [name, slug, colour, price, stock] of [
+        ['Rowan Chair', 'rowan-chair', 'Myrrh Green', 138, 0],
+        ['Crew Chair', 'crew-chair', 'Moss Green', 116, 5],
+      ] as const) {
+        const parent = await client.query<{ id: string }>(`INSERT INTO "shp_products" ("name", "slug", "type", "price", "status") VALUES ($1, $2, 'PHYSICAL', 0, 'ACTIVE') RETURNING "id"`, [name, slug])
+        const child = await client.query<{ id: string }>(
+          `INSERT INTO "shp_products" ("name", "slug", "type", "price", "status", "catalogue_hidden", "track_inventory", "stock_count", "out_of_stock_behaviour") VALUES ($1, $2, 'PHYSICAL', $3, 'ACTIVE', true, true, $4, 'BLOCK') RETURNING "id"`,
+          [`${name} - ${colour}`, `${slug}-green`, price, stock],
+        )
+        const chairOption = await client.query<{ id: string }>(`INSERT INTO "svr_options" ("product_id", "name") VALUES ($1, 'Upholstery Colour') RETURNING "id"`, [parent.rows[0]!.id])
+        const chairValue = await client.query<{ id: string }>(`INSERT INTO "svr_option_values" ("option_id", "label", "slug") VALUES ($1, $2, $3) RETURNING "id"`, [chairOption.rows[0]!.id, colour, colour.toLowerCase().replace(' ', '-')])
+        const chairVariant = await client.query<{ id: string }>(`INSERT INTO "svr_variants" ("product_id", "child_product_id") VALUES ($1, $2) RETURNING "id"`, [parent.rows[0]!.id, child.rows[0]!.id])
+        await client.query(`INSERT INTO "svr_variant_values" ("variant_id", "option_value_id") VALUES ($1, $2)`, [chairVariant.rows[0]!.id, chairValue.rows[0]!.id])
+      }
     })
 
     it('finds products with their page addresses, variations and accessories', async () => {
-      const found = await products.searchProducts('standing desk', null)
+      const relevance = { maxPrice: null, inStockOnly: true, sort: 'relevance' as const, category: null }
+      const found = await products.searchProducts('standing desk', relevance)
       expect(found.products[0]).toMatchObject({ id: deskId, url: 'https://shop.test/shop/products/air-lite-desk', hasVariations: true })
       const detail = await products.getProductDetail(deskId, 'black', 2)
       expect(detail?.matchingVariations?.[0]).toMatchObject({ id: blackId, url: 'https://shop.test/shop/products/air-lite-desk?frame-colour=black' })
+      // By slug too, with the visitor's own words for an option.
+      const bySlug = await products.getProductDetail('air-lite-desk', 'black frame with a wooden edge')
+      expect(bySlug?.id).toBe(deskId)
+      expect(bySlug?.matchingVariations?.map((v) => v.id)).toEqual([blackId])
+
+      // A colour found in the variations, only what can be bought, cheapest first.
+      const green = await products.searchProducts('green chair', { ...relevance, sort: 'price' })
+      expect(green.products.map((p) => p.name)).toEqual(['Crew Chair'])
+      expect(green.products[0]?.variation).toMatchObject({ options: 'Moss Green', price: '£116', url: 'https://shop.test/shop/products/crew-chair?upholstery-colour=moss-green' })
+      const everything = await products.searchProducts('green chair', { ...relevance, inStockOnly: false })
+      expect(everything.products.map((p) => p.name).sort()).toEqual(['Crew Chair', 'Rowan Chair'])
       expect(detail?.accessories?.items[0]).toMatchObject({ name: 'Anti-fatigue Mat', url: 'https://shop.test/shop/products/mat' })
       const sku = await products.findBySku('AL100BK')
       expect(sku.hits[0]).toMatchObject({ productId: deskId, url: 'https://shop.test/shop/products/air-lite-desk?frame-colour=black' })

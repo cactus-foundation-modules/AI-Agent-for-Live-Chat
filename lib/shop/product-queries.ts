@@ -11,15 +11,18 @@ import {
   type QuantityQuote,
   type StockFacts,
 } from './product-format'
-import { summariseStockByOption, variationHaystack, variationWords, type OptionAvailability } from './variation-stock'
+import { summariseStockByOption, type OptionAvailability } from './variation-stock'
+import { canBuy, pickForSearch, type SearchVariation } from './search-variations'
+import { rankProducts, type IndexedProduct } from './search-rank'
+import { pickVariations } from './variation-match'
 import { resolveProductDeliveryOptions } from '@/modules/shop/lib/detail-delivery'
 import { getProductFaqCategoryChain } from '@/modules/shop/lib/db/catalogue'
 import { normaliseFaqSet } from '@/modules/shop/lib/faq'
 import { loadShopWideFaqs, resolveForProduct, toSpokenFaqs } from './faq-queries'
 import { describeDeliveryTiming, type DeliveryTimingWords } from './delivery-words'
 import { describeForecast, loadDeliveryForecast, type SpokenDeliveryService } from './delivery-forecast'
-import { escapeLike, plainText, searchTokens, truncate } from './text'
-import { expandSearchWords, textHasWord, type Vocabulary } from './spelling'
+import { plainText, searchTokens, truncate } from './text'
+import { expandSearchWords, type Vocabulary } from './spelling'
 import { normaliseSpokenSku, skuMatch, skuSearchDigits, type SkuMatch } from './sku'
 import { loadAccessories, type AccessoryList } from './product-accessories'
 import { pageBase, productPage, readPicks, type PageBase } from './product-links'
@@ -142,27 +145,12 @@ function toSummary(row: ProductRow, symbol: string, base: PageBase, spread: Vari
   }
 }
 
-/** One word, under any of its spellings, matched anywhere a shopper would expect it to be. */
-function tokenMatches(variants: string[]): Prisma.Sql {
-  const each = variants.map((variant) => {
-    const like = `%${escapeLike(variant)}%`
-    return Prisma.sql`(p."name" ILIKE ${like} OR p."sku" ILIKE ${like} OR p."short_description" ILIKE ${like}
-      OR p."description" ILIKE ${like} OR c."name" ILIKE ${like})`
-  })
-  return Prisma.sql`(${Prisma.join(each, ' OR ')})`
-}
+/** Which optional tables this shop has for a search to read. */
+type SearchReach = { variations: boolean; attributes: boolean }
 
-/** Favours a word in the name, then in the category, then the blurb. */
-function tokenScore(variants: string[]): Prisma.Sql {
-  const each = variants.map((variant) => {
-    const like = `%${escapeLike(variant)}%`
-    // COALESCE: a product with no category or no blurb compares as NULL, and one
-    // NULL would blank the whole sum and with it the ranking.
-    return Prisma.sql`(COALESCE(p."name" ILIKE ${like}, false)::int * 4
-      + COALESCE(c."name" ILIKE ${like}, false)::int * 2
-      + COALESCE(p."short_description" ILIKE ${like}, false)::int)`
-  })
-  return Prisma.sql`GREATEST(${Prisma.join(each, ', ')})`
+async function searchReach(): Promise<SearchReach> {
+  const [variations, attributes] = await Promise.all([tableExists('svr_variants'), tableExists('pat_product_values')])
+  return { variations, attributes }
 }
 
 const VOCABULARY_TTL_MS = 10 * 60 * 1000
@@ -189,52 +177,307 @@ async function loadVocabulary(): Promise<Vocabulary> {
   return words
 }
 
-async function runSearch(words: string[][], maxPrice: number | null, requireAll: boolean): Promise<ProductRow[]> {
-  const matches = words.map(tokenMatches)
-  const where = requireAll ? Prisma.join(matches, ' AND ') : Prisma.join(matches, ' OR ')
-  const score = Prisma.join(words.map(tokenScore), ' + ')
-  const priceCap = maxPrice === null
-    ? Prisma.empty
-    : Prisma.sql`AND COALESCE(NULLIF(p."sale_price", 0), p."price") <= ${maxPrice}`
-  return prisma.$queryRaw<ProductRow[]>(Prisma.sql`
+/** Listings priced per search: enough that "the cheapest" is the cheapest of
+ *  everything that matches well, not of the six most relevant. */
+const CANDIDATE_LIMIT = 80
+const INDEX_TTL_MS = 10 * 60 * 1000
+const INDEX_BODY_CHARS = 4000
+let indexCache: { products: IndexedProduct[]; at: number } | null = null
+
+/**
+ * The words of every product a visitor could see, read once and kept for a
+ * few minutes like the vocabulary: name, category, blurb and description, and
+ * the labels of its variations' options and the attribute values on it and
+ * them (a colour family, "Green & Black"). One read of about a fifth of a
+ * second, where matching each search word in SQL against options and
+ * attributes took many seconds a search. Prices and stock are never cached:
+ * they are read fresh for the products a search picks.
+ */
+async function loadSearchIndex(reach: SearchReach): Promise<IndexedProduct[]> {
+  if (indexCache && Date.now() - indexCache.at < INDEX_TTL_MS) return indexCache.products
+  const options = reach.variations
+    ? Prisma.sql`(SELECT string_agg(ov."label", ' ') FROM "svr_options" o JOIN "svr_option_values" ov ON ov."option_id" = o."id" WHERE o."product_id" = p."id")`
+    : Prisma.sql`NULL::text`
+  const owned = reach.attributes
+    ? reach.variations
+      ? Prisma.sql`SELECT pv."product_id" AS owner_id, pv."value_id" FROM "pat_product_values" pv JOIN vis ON vis."id" = pv."product_id"
+          UNION
+          SELECT sv."product_id", pv."value_id" FROM "svr_variants" sv JOIN vis ON vis."id" = sv."product_id"
+            JOIN "pat_product_values" pv ON pv."product_id" = sv."child_product_id" WHERE sv."enabled" = true`
+      : Prisma.sql`SELECT pv."product_id" AS owner_id, pv."value_id" FROM "pat_product_values" pv JOIN vis ON vis."id" = pv."product_id"`
+    : Prisma.sql`SELECT NULL::text AS owner_id, NULL::text AS value_id WHERE false`
+  const labels = reach.attributes
+    ? Prisma.sql`SELECT owned."owner_id", string_agg(av."label", ' ') AS labels FROM owned JOIN "pat_attribute_values" av ON av."id" = owned."value_id" GROUP BY owned."owner_id"`
+    : Prisma.sql`SELECT NULL::text AS owner_id, NULL::text AS labels WHERE false`
+  const rows = await prisma.$queryRaw<Array<{
+    id: string
+    name: string
+    sku: string | null
+    short_description: string | null
+    description: string | null
+    category_name: string | null
+    option_labels: string | null
+    attribute_labels: string | null
+    category_ids: string[] | null
+    master_category_id: string | null
+    popularity: unknown
+  }>>(Prisma.sql`
+    WITH vis AS (SELECT p."id" FROM "shp_products" p WHERE ${VISIBLE}),
+    owned AS (${owned}),
+    labelled AS (${labels})
+    SELECT p."id", p."name", p."sku", p."short_description", p."description", c."name" AS category_name,
+           ${options} AS option_labels,
+           labelled."labels" AS attribute_labels,
+           ARRAY(SELECT pc."category_id" FROM "shp_product_categories" pc WHERE pc."product_id" = p."id") AS category_ids,
+           p."master_category_id", p."popularity"
+    FROM "shp_products" p
+    LEFT JOIN "shp_categories" c ON c."id" = p."master_category_id"
+    LEFT JOIN labelled ON labelled."owner_id" = p."id"
+    WHERE ${VISIBLE}
+  `)
+  const products = rows.map((row): IndexedProduct => ({
+    id: row.id,
+    name: row.name.toLowerCase(),
+    variants: `${row.option_labels ?? ''} ${row.attribute_labels ?? ''}`.toLowerCase(),
+    category: (row.category_name ?? '').toLowerCase(),
+    body: `${row.sku ?? ''} ${plainText(row.short_description)} ${truncate(plainText(row.description), INDEX_BODY_CHARS)}`.toLowerCase(),
+    categoryIds: [...new Set([row.master_category_id ?? '', ...(row.category_ids ?? [])].filter(Boolean))],
+    popularity: numberOrNull(row.popularity) ?? 0,
+  }))
+  indexCache = { products, at: Date.now() }
+  return products
+}
+
+/** The category a slug or name means, with every category under it. Empty
+ *  when the shop has none by that name. */
+async function categoryTree(category: string): Promise<string[]> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    WITH RECURSIVE tree AS (
+      SELECT c."id" FROM "shp_categories" c WHERE c."slug" = ${category} OR lower(c."name") = lower(${category})
+      UNION
+      SELECT child."id" FROM "shp_categories" child JOIN tree ON child."parent_id" = tree."id"
+    )
+    SELECT "id" FROM tree LIMIT 500
+  `)
+  return rows.map((row) => row.id)
+}
+
+/** The products, in the order given, as search rows. */
+async function productRows(ids: string[]): Promise<ProductRow[]> {
+  if (ids.length === 0) return []
+  const rows = await prisma.$queryRaw<ProductRow[]>(Prisma.sql`
     SELECT p."id", p."name", p."slug", p."price", p."sale_price", p."short_description", p."track_inventory",
            p."stock_count", p."low_stock_threshold", p."out_of_stock_behaviour", p."is_pre_order",
            c."name" AS category_name
     FROM "shp_products" p
     LEFT JOIN "shp_categories" c ON c."id" = p."master_category_id"
-    WHERE ${VISIBLE} AND (${where}) ${priceCap}
-    ORDER BY (${score}) DESC, COALESCE(p."popularity", 0) DESC, p."name"
-    LIMIT ${SEARCH_LIMIT}
+    WHERE p."id" IN (${Prisma.join(ids)}) AND ${VISIBLE}
   `)
+  const order = new Map(ids.map((id, index) => [id, index]))
+  return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
 }
 
-export type SearchOutcome = { products: ProductSummary[]; note: string | null }
+type SearchVariationRow = {
+  product_id: string
+  id: string
+  price: unknown
+  sale_price: unknown
+  track_inventory: boolean
+  stock_count: number | null
+  low_stock_threshold: number | null
+  out_of_stock_behaviour: string | null
+  is_pre_order: boolean
+  option_values: string[] | null
+  attribute_labels: string[] | null
+  option_picks: unknown
+}
 
-export async function searchProducts(query: string, maxPrice: number | null): Promise<SearchOutcome> {
+type LoadedVariation = SearchVariation & { picks: unknown }
+
+/** Every switched-on variation of these listings, with the labels a search
+ *  word can land on. */
+async function searchVariations(productIds: string[], reach: SearchReach): Promise<Map<string, LoadedVariation[]>> {
+  const out = new Map<string, LoadedVariation[]>()
+  if (productIds.length === 0 || !reach.variations) return out
+  const attributeLabels = reach.attributes
+    ? Prisma.sql`(SELECT array_agg(av."label") FROM "pat_product_values" pv JOIN "pat_attribute_values" av ON av."id" = pv."value_id"
+        WHERE pv."product_id" = child."id")`
+    : Prisma.sql`NULL::text[]`
+  const rows = await prisma.$queryRaw<SearchVariationRow[]>(Prisma.sql`
+    SELECT sv."product_id", child."id", child."price", child."sale_price", child."track_inventory", child."stock_count",
+           child."low_stock_threshold", child."out_of_stock_behaviour", child."is_pre_order",
+           (SELECT array_agg(ov."label" ORDER BY o."position", ov."position")
+              FROM "svr_variant_values" vv
+              JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
+              JOIN "svr_options" o ON o."id" = ov."option_id"
+             WHERE vv."variant_id" = sv."id") AS option_values,
+           ${attributeLabels} AS attribute_labels,
+           (SELECT json_agg(json_build_array(o."name", ov."slug") ORDER BY o."position", ov."position")
+              FROM "svr_variant_values" vv
+              JOIN "svr_option_values" ov ON ov."id" = vv."option_value_id"
+              JOIN "svr_options" o ON o."id" = ov."option_id"
+             WHERE vv."variant_id" = sv."id") AS option_picks
+    FROM "svr_variants" sv JOIN "shp_products" child ON child."id" = sv."child_product_id"
+    WHERE sv."product_id" IN (${Prisma.join(productIds)}) AND sv."enabled" = true AND child."status" = 'ACTIVE'
+    ORDER BY sv."product_id", sv."position"
+  `)
+  for (const row of rows) {
+    const optionValues = row.option_values ?? []
+    const list = out.get(row.product_id) ?? []
+    list.push({
+      id: row.id,
+      optionValues,
+      labels: [...optionValues, ...(row.attribute_labels ?? [])],
+      price: effectivePrice(numberOrNull(row.price) ?? 0, numberOrNull(row.sale_price)).now,
+      facts: {
+        trackInventory: row.track_inventory,
+        stockCount: row.stock_count,
+        lowStockThreshold: row.low_stock_threshold,
+        outOfStockBehaviour: row.out_of_stock_behaviour,
+        isPreOrder: row.is_pre_order,
+      },
+      picks: row.option_picks,
+    })
+    out.set(row.product_id, list)
+  }
+  return out
+}
+
+/** A search hit. For a listing sold in variations whose variations the words
+ *  picked out (a colour, a size), `variation` is the cheapest of those - the
+ *  one that can be bought when any can - with its own price, stock and page. */
+export type SearchedProduct = ProductSummary & {
+  variation: { id: string; options: string; price: string; availability: string; url: string | null } | null
+}
+
+export type SearchOptions = {
+  maxPrice: number | null
+  /** Leave out what cannot be bought now. On unless the visitor asked about
+   *  a particular product. */
+  inStockOnly: boolean
+  /** 'price' lists the cheapest first. */
+  sort: 'relevance' | 'price'
+  /** A category slug or name: only products in it (or under it). */
+  category: string | null
+}
+
+export type SearchOutcome = { products: SearchedProduct[]; note: string | null }
+
+type Ranked = { product: SearchedProduct; price: number }
+
+function rankListing(row: ProductRow, variations: LoadedVariation[] | undefined, words: string[][], ctx: {
+  symbol: string
+  base: PageBase
+  spread: VariationSpread | null
+  inStockOnly: boolean
+}): Ranked | null {
+  const summary = toSummary(row, ctx.symbol, ctx.base, ctx.spread)
+  if (!variations || variations.length === 0) {
+    const facts: StockFacts = {
+      trackInventory: row.track_inventory,
+      stockCount: row.stock_count,
+      lowStockThreshold: row.low_stock_threshold,
+      outOfStockBehaviour: row.out_of_stock_behaviour,
+      isPreOrder: row.is_pre_order,
+    }
+    if (ctx.inStockOnly && !canBuy(facts)) return null
+    const price = effectivePrice(numberOrNull(row.price) ?? 0, numberOrNull(row.sale_price)).now
+    return { product: { ...summary, variation: null }, price }
+  }
+  const pick = pickForSearch(variations, words)
+  if (ctx.inStockOnly && pick.buyable.length === 0) return null
+  const pool = ctx.inStockOnly ? pick.buyable : pick.fitting
+  const low = Math.min(...pool.map((variation) => variation.price))
+  const high = Math.max(...pool.map((variation) => variation.price))
+  const buyableCount = pick.buyable.length
+  const only = pick.fitting.length === 1 ? pick.fitting[0] : undefined
+  const availability = only
+    ? stockSummary(only.facts)
+    : buyableCount === pick.fitting.length
+      ? 'can be ordered in every option'
+      : buyableCount === 0
+        ? 'out of stock in every option right now'
+        : `can be ordered in ${buyableCount} of ${pick.fitting.length} options`
+  const chosen = pick.narrowed ? pick.cheapest : null
+  return {
+    product: {
+      ...summary,
+      price: describePriceRange({ low, high }, ctx.symbol),
+      availability,
+      variation: chosen
+        ? {
+            id: chosen.id,
+            options: chosen.optionValues.join(' / '),
+            price: formatPrice(chosen.price, ctx.symbol),
+            availability: stockSummary(chosen.facts),
+            url: productPage(ctx.base, row.slug, readPicks(chosen.picks)),
+          }
+        : null,
+    },
+    price: chosen ? chosen.price : low,
+  }
+}
+
+export async function searchProducts(query: string, options: SearchOptions): Promise<SearchOutcome> {
   const tokens = searchTokens(query)
-  if (tokens.length === 0) return { products: [], note: 'Nothing to search for. Ask the visitor what they are looking for.' }
+  if (tokens.length === 0 && !options.category) return { products: [], note: 'Nothing to search for. Ask the visitor what they are looking for.' }
   const config = await getShopConfigCached()
+  const reach = await searchReach()
+  const categories = options.category ? await categoryTree(options.category) : null
+  if (categories && categories.length === 0) {
+    return { products: [], note: `The shop has no category called "${options.category}". Search without one, or list the categories.` }
+  }
 
   // Widen each word to its other spellings (light/lite, colour/color) before
   // searching, so a different spelling never reads as "the shop has none".
   const words = expandSearchWords(tokens, await loadVocabulary().catch(() => null))
-  let rows = await runSearch(words, maxPrice, true)
-  let loosened = false
-  if (rows.length === 0 && words.length > 1) {
-    rows = await runSearch(words, maxPrice, false)
-    loosened = rows.length > 0
-  }
-  const spreads = await variationSpreads(rows.map((row) => row.id))
+  const index = await loadSearchIndex(reach)
+  const found = rankProducts(index, words, {
+    categoryIds: categories ? new Set(categories) : null,
+    sort: options.sort,
+    limit: CANDIDATE_LIMIT,
+  })
+  const loosened = found.loosened
+  const rows = await productRows(found.ids)
+  const ids = rows.map((row) => row.id)
+  const [spreads, variations] = await Promise.all([variationSpreads(ids), searchVariations(ids, reach)])
   const base = pageBase(config.productUrlStyle)
-  const products = rows.map((row) => toSummary(row, config.currencySymbol, base, spreads.get(row.id) ?? null))
+  const ranked: Ranked[] = []
+  let leftOut = 0
+  for (const row of rows) {
+    const hit = rankListing(row, variations.get(row.id), words, {
+      symbol: config.currencySymbol,
+      base,
+      spread: spreads.get(row.id) ?? null,
+      inStockOnly: options.inStockOnly,
+    })
+    if (hit) ranked.push(hit)
+    else leftOut++
+  }
+  if (options.sort === 'price') ranked.sort((a, b) => a.price - b.price)
+  const products = ranked.slice(0, SEARCH_LIMIT).map((entry) => entry.product)
   const basis = priceBasis(config.taxMode)
   if (products.length === 0) {
-    return { products, note: 'No matching products, even allowing for other spellings. Try fewer or different words, or list the categories.' }
+    return {
+      products,
+      note: leftOut > 0
+        ? `${leftOut} matching product(s) exist but none can be bought right now (out of stock). Say nothing is available in that just now and offer the nearest alternative (another colour or a similar product), searching again.`
+        : 'No matching products, even allowing for other spellings. Try fewer or different words, or list the categories.',
+    }
   }
-  const ranged = products.some((product) => product.hasVariations)
+  const ranged = products.some((product) => product.hasVariations && !product.variation)
+  const narrowed = products.some((product) => product.variation)
   return {
     products,
-    note: `Prices are ${basis}. To recommend one, put its url on a line of its own in your reply (never as a markdown link): the chat shows it as a product with Add to basket.${ranged ? ' A price given as a range belongs to a product sold in several variations: call get_product with the options the visitor wants to get the exact price.' : ''}${loosened ? ' These match only some of the words searched for, so check they suit.' : ''}`,
+    note: [
+      `Prices are ${basis}.`,
+      options.sort === 'price' ? 'Listed cheapest first, by the price of what fits the words searched.' : '',
+      options.inStockOnly && leftOut > 0 ? `${leftOut} other match(es) are out of stock right now and were left out: do not offer them.` : '',
+      narrowed ? 'Where a product has a variation, the words searched picked out that variation (a colour, a size): quote its price and show its url, not the product\'s, so the card and Add to basket are for that variation.' : '',
+      'To recommend one, put its url (the variation\'s, where there is one) on a line of its own in your reply, never as a markdown link: the chat shows it as a product with Add to basket.',
+      ranged ? 'A price given as a range belongs to a product sold in several variations: call get_product with the options the visitor wants to get the exact price.' : '',
+      loosened ? 'These match only some of the words searched for, so check they suit.' : '',
+    ].filter(Boolean).join(' '),
   }
 }
 
@@ -368,15 +611,21 @@ export type VariationsFound = {
   matches: VariationMatch[]
   total: number
   availableByOption: OptionAvailability[] | null
+  /** Words no variation carries, set aside rather than ruling everything out. */
+  ignored: string[]
+  /** True when no variation had every word asked for: the matches are the
+   *  nearest, and `unmet` says what they lack. */
+  closest: boolean
+  unmet: string[]
 }
 
-/** The switched-on variations of a listing whose options contain every word the
- *  caller used ("black high back"), each with its own price. Words about an
- *  option rather than a value ("finish", "frame", "cm") are dropped, and a word
- *  may match an option's name as well as its value. Words that are all filler
- *  ("which colours are in stock?") fit every variation, so the stock summary
- *  still covers the lot. Empty list for no match; null when the listing has no
- *  variations to read. */
+/** The switched-on variations of a listing the caller's words pick out ("black
+ *  high back", "120cm no modesty panel black frame"), each with its own price.
+ *  The matching rules are lib/shop/variation-match.ts: negations folded, words
+ *  no variation carries set aside, a colour bound to the option it names, and
+ *  the nearest variations when nothing has every word. Words that are all
+ *  filler ("which colours are in stock?") fit every variation, so the stock
+ *  summary still covers the lot. Null when the listing has no variations. */
 async function findVariations(
   productId: string,
   wanted: string,
@@ -385,7 +634,6 @@ async function findVariations(
   base: PageBase,
   listingSlug: string | null,
 ): Promise<VariationsFound | null> {
-  const tokens = variationWords(wanted)
   if (!(await tableExists('svr_variants'))) return null
   const rows = await prisma.$queryRaw<VariationRow[]>`
     SELECT child."id", child."name", child."sku", child."price", child."sale_price", child."track_inventory",
@@ -410,7 +658,6 @@ async function findVariations(
     ORDER BY sv."position", child."name"
     LIMIT 1000
   `
-  const words = expandSearchWords(tokens, null)
   const facts = (row: VariationRow): StockFacts => ({
     trackInventory: row.track_inventory,
     stockCount: row.stock_count,
@@ -418,12 +665,9 @@ async function findVariations(
     outOfStockBehaviour: row.out_of_stock_behaviour,
     isPreOrder: row.is_pre_order,
   })
-  const fits = rows
-    .map((row) => ({ row, optionNames: row.option_names ?? [], optionValues: row.option_values ?? [] }))
-    .filter((fit) => {
-      const haystack = variationHaystack({ optionNames: fit.optionNames, optionValues: fit.optionValues, name: fit.row.name })
-      return words.every((variants) => textHasWord(haystack, variants))
-    })
+  const candidates = rows.map((row) => ({ row, optionNames: row.option_names ?? [], optionValues: row.option_values ?? [], name: row.name }))
+  const pick = pickVariations(wanted, candidates)
+  const fits = pick.fits.map((index) => candidates[index]).filter((fit): fit is (typeof candidates)[number] => !!fit)
   const matches = fits.slice(0, MAX_MATCHING_VARIATIONS).map(({ row, optionValues }): VariationMatch => {
     const { now, was } = effectivePrice(numberOrNull(row.price) ?? 0, numberOrNull(row.sale_price))
     const stock = facts(row)
@@ -441,7 +685,7 @@ async function findVariations(
   const availableByOption = fits.length > matches.length
     ? summariseStockByOption(fits.map((fit) => ({ optionNames: fit.optionNames, optionValues: fit.optionValues, facts: facts(fit.row) })))
     : null
-  return { matches, total: fits.length, availableByOption }
+  return { matches, total: fits.length, availableByOption, ignored: pick.ignored, closest: pick.closest, unmet: pick.unmet }
 }
 
 async function loadSpecifications(productId: string): Promise<Array<{ name: string; values: string[] }>> {
@@ -472,8 +716,9 @@ function describeDimensions(row: DetailRow): string | null {
   return `${parts.filter((part): part is string => part !== null).join(', ')} ${unit}`.trim()
 }
 
+/** One product in full, found by its id or by its page slug. */
 export async function getProductDetail(
-  productId: string,
+  reference: string,
   wantedOptions: string | null = null,
   quantity: number | null = null,
 ): Promise<ProductDetail | null> {
@@ -485,11 +730,14 @@ export async function getProductDetail(
            c."name" AS category_name
     FROM "shp_products" p
     LEFT JOIN "shp_categories" c ON c."id" = p."master_category_id"
-    WHERE p."id" = ${productId} AND ${VISIBLE}
+    WHERE (p."id" = ${reference} OR p."slug" = ${reference}) AND ${VISIBLE}
+    ORDER BY (p."id" = ${reference}) DESC
     LIMIT 1
   `
   const row = rows[0]
   if (!row) return null
+  // A slug may have been given: everything below is keyed on the real id.
+  const productId = row.id
 
   const config = await getShopConfigCached()
   const base = pageBase(config.productUrlStyle)
@@ -571,16 +819,22 @@ function priceNoteCore(
   if (!wantedOptions || found === null) {
     return `${base} This product is sold in ${spread.count} variations and the price depends on which is chosen, so the price above is a range. If the visitor has named any options (colour, size, back height), call get_product again with those words in "options" to get the exact price of that variation. To answer which options are in stock, call get_product again with the options they have named (or "in stock" if none) and answer from availableByOption or each variation's availability. Never quote the range as if it were the price of their choice.`
   }
+  const setAside = found.ignored.length > 0
+    ? ` These words match none of this product's options and were set aside: ${found.ignored.join(', ')}. They may describe the product itself (how a finish looks, say); check the options listed above if one matters.`
+    : ''
   if (found.matches.length === 0) {
-    return `${base} No variation matches those options. Check the option values listed above and try again with words from them, or tell the visitor you cannot find that combination.`
+    return `${base}${setAside} No variation matches those options. Read the option values listed above, map the visitor's words onto them yourself (for example "no mod panel" is "Without Modesty Panel") and call get_product again with those exact values before telling the visitor anything. Only if that also finds nothing, say which option they asked for is not sold.`
+  }
+  if (found.closest) {
+    return `${base}${setAside} No variation has everything asked for; these are the nearest, and they do not have: ${found.unmet.join(', ')}. Tell the visitor plainly which part of their choice is not sold and offer the nearest; never say the whole product is unavailable.`
   }
   if (found.total > found.matches.length) {
-    return `${base} ${found.total} variations fit those words and only ${found.matches.length} are listed. If the visitor asked what is in stock or available, answer from availableByOption, which covers every one that fits: name about three values from inStock (and say which are out of stock if they asked), then offer the rest; do not ask them to pick first. A value counts as in stock if it is in stock in at least one of the combinations that fit. Only when they want a price or a basket line, ask which option is still undecided, then call get_product again with more words in "options".`
+    return `${base}${setAside} ${found.total} variations fit those words and only ${found.matches.length} are listed. If the visitor asked what is in stock or available, answer from availableByOption, which covers every one that fits: name about three values from inStock (and say which are out of stock if they asked), then offer the rest; do not ask them to pick first. A value counts as in stock if it is in stock in at least one of the combinations that fit. Only when they want a price or a basket line, ask which option is still undecided, then call get_product again with more words in "options".`
   }
   if (found.matches.length === 1) {
-    return `${base} Quote the price in matchingVariations: it is the exact price of what the visitor asked about. To show it, put that variation's url on a line of its own (not the product's), and use its id in email_summary product_ids, so Add to basket and the email are for exactly this variation.`
+    return `${base}${setAside} Quote the price in matchingVariations: it is the exact price of what the visitor asked about. To show it, put that variation's url on a line of its own (not the product's), and use its id in email_summary product_ids, so Add to basket and the email are for exactly this variation.`
   }
-  return `${base} Several variations fit. Quote the price of each that matters, or ask which one they want. Once they have chosen, show that variation's url on a line of its own and use its id in email_summary product_ids, not the product's.`
+  return `${base}${setAside} Several variations fit. If the visitor already chose the option that tells them apart earlier in this chat, call get_product again with that added rather than asking. Otherwise quote the price of each that matters, or ask which one they want. Once they have chosen, show that variation's url on a line of its own and use its id in email_summary product_ids, not the product's.`
 }
 
 /** What the assistant discussed, as references the unified inbox can print. An id

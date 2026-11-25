@@ -10,7 +10,8 @@ import {
 import { filesForModel, loadedFile, photosForReport, type FileRef, type LoadedFile } from './attachments'
 import { AUTHOR_ID } from './constants'
 import type { ConversationRow } from './conversation-row'
-import { addressOf } from './discussed-products'
+import { addressOf, markLinked } from './discussed-products'
+import { saveDiscussedProducts } from './order-state'
 import {
   addUsage,
   appendToolLog,
@@ -157,6 +158,18 @@ async function loadFiles(conversationId: string, files: readonly FileRef[]): Pro
   return loaded
 }
 
+/** Marks the products the reply showed (their addresses in it) on the chat's
+ *  record, so a note or a text sent later carries what was recommended. A
+ *  record that cannot be saved never costs the visitor their reply. */
+async function rememberShown(ctx: ToolContext, reply: string): Promise<void> {
+  const next = markLinked(ctx.products, ctx.shown, reply)
+  if (JSON.stringify(next) === JSON.stringify(ctx.products)) return
+  ctx.products = next
+  await saveDiscussedProducts(ctx.conversationId, next).catch((err: unknown) => {
+    console.error('[ai-agent-for-live-chat] could not remember the products shown', err)
+  })
+}
+
 /** The model, with its tools, writing the reply. */
 async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: ConversationRow, upToId: number, online: boolean): Promise<void> {
   const conversationId = chat.conversation.id
@@ -183,6 +196,7 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
     orders: { verified: [...row.verifiedOrders], failedChecks: row.failedOrderChecks, emailsSent: row.emailsSent },
     textsSent: row.textsSent,
     products: [...row.discussedProducts],
+    shown: [],
     effects: noEffects(),
   }
   const [loaded, locked, usedUp, canText, textsGone] = await Promise.all([
@@ -253,6 +267,11 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
       return
     }
     await say(conversationId, settings, outcome.text)
+    await rememberShown(ctx, outcome.text)
+    // The callback has now been offered once; it is not offered again unasked.
+    if (row.callbackWanted && !ctx.effects.callbackSaved) {
+      await setCallbackWanted(conversationId, false).catch(() => undefined)
+    }
   } catch (err) {
     if (err instanceof ChatEndedError) return
     console.error('[ai-agent-for-live-chat] the assistant could not answer', err)
