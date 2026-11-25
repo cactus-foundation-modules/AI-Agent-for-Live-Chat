@@ -49,4 +49,9 @@ describe('findInstructionConflicts', () => {
     expect(found).toHaveLength(1)
     expect(found[0]!.advice).not.toContain('\u2014')
   })
+
+  it('leaves alone a link the owner wants sent', () => {
+    expect(findInstructionConflicts("If they're interested, offer to send them the link to the article: https://workplaceinsight.net/the-office-furniture-price-on-the-page-has-always-been-an-opening-bid/")).toHaveLength(0)
+    expect(findInstructionConflicts('Tell them our sizing guide is at deskwell.co.uk/guides/sizing.')).toHaveLength(1)
+  })
 })

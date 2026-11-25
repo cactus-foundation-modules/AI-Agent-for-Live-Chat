@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-for-live-chat",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "tablePrefix": "aichat_",
   "notificationKinds": [
     {"id": "callback", "label": "Callback requests from the chat assistant", "description": "The chat assistant could not help a visitor and took their name and email so somebody can get back to them.", "dedupePrefix": "ai-agent-for-live-chat:callback:"},
