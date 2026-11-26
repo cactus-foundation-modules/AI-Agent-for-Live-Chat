@@ -198,6 +198,7 @@ export const getProductTool = defineTool({
     properties: {
       product_id: text('The id exactly as returned by search_products or find_by_sku, or a link to the product\'s page that the visitor sent (its options are read from it).'),
       quantity: { type: 'number', description: 'Optional. How many they want, as a whole number. Returns quantityQuote: the unit price, the exact total and whether there is enough stock. Always pass it when they give a quantity, instead of working the total out yourself.' },
+      needed_by: text('Optional. The day they need it by, in their words ("Wednesday", "the 2nd", "tomorrow"). Each delivery line then says whether it arrives IN TIME or TOO LATE.'),
       options: text('Optional. The options they have chosen, in their own words, for example "black high back" or "1600 walnut". Returns matchingVariations: each fitting variation with its own id, url and exact price. Pass it whenever they have named any option, and again with more words if several still fit.'),
     },
     required: ['product_id'],
@@ -207,6 +208,7 @@ export const getProductTool = defineTool({
     product_id: z.string().trim().min(1).max(1000),
     options: z.string().trim().max(300).optional(),
     quantity: z.number().int().positive().max(100_000).optional(),
+    needed_by: z.string().trim().max(60).optional(),
   }),
   summarise: (args) => `product_id: ${args.product_id.slice(0, 120)}${args.options ? `, options: ${args.options.slice(0, 120)}` : ''}`,
   guidance: 'When they name an option, call get_product with it in options and quote that variation\'s exact price; quote a range only while they have not chosen. Pass EVERY option they have chosen so far in this chat, including ones from earlier messages (a finish from their first message still counts), in their words or the shop\'s: the matching forgives "no" for "without" and sets aside words that are not options. When they give a quantity, pass it and use quantityQuote: never do the sum yourself.',
@@ -220,7 +222,7 @@ export const getProductTool = defineTool({
       reference = link.slug
       options = [link.options, options].filter(Boolean).join(' ') || null
     }
-    const detail = await getProductDetail(reference, options, args.quantity ?? null, (productId) => choicesInAddress(recordedEntry(ctx.products, productId)?.url))
+    const detail = await getProductDetail(reference, options, args.quantity ?? null, (productId) => choicesInAddress(recordedEntry(ctx.products, productId)?.url), blankToNull(args.needed_by))
     if (!detail) return { ok: false, message: 'That product could not be found. Search for it with search_products and use the id it returns.' }
     await remember(ctx, fromProductDetail(detail))
     noteShown(ctx, shownByTool([{ id: detail.id, name: detail.name, url: detail.url, variations: detail.matchingVariations, partial: detail.chosenOptions }]))
