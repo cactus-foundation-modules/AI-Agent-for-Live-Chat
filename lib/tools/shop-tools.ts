@@ -13,6 +13,7 @@ import {
 import { getSiteUrlOrNull } from '@/lib/config/env'
 import { looksLikeLink, readShopLink } from '../shop/shop-link'
 import { choicesInAddress } from '../shop/partial-choice'
+import { keepSaidSizes } from '../shop/said-sizes'
 import { saveDiscussedProducts } from '../order-state'
 import { matchService, serviceMissMessage, timingMenus } from '../shop/delivery-choice'
 import { lookupFaqs } from '../shop/faq-queries'
@@ -210,11 +211,14 @@ export const getProductTool = defineTool({
     quantity: z.number().int().positive().max(100_000).optional(),
     needed_by: z.string().trim().max(60).optional(),
   }),
-  summarise: (args) => `product_id: ${args.product_id.slice(0, 120)}${args.options ? `, options: ${args.options.slice(0, 120)}` : ''}`,
+  summarise: (args) => `product_id: ${args.product_id.slice(0, 120)}${args.options ? `, options: ${args.options.slice(0, 120)}` : ''}${args.needed_by ? `, needed by: ${args.needed_by.slice(0, 40)}` : ''}`,
   guidance: 'When they name an option, call get_product with it in options and quote that variation\'s exact price; quote a range only while they have not chosen. Pass EVERY option they have chosen so far in this chat, including ones from earlier messages (a finish from their first message still counts), in their words or the shop\'s: the matching forgives "no" for "without" and sets aside words that are not options. When they give a quantity, pass it and use quantityQuote: never do the sum yourself.',
   async handler(ctx, args) {
     let reference = args.product_id
-    let options = blankToNull(args.options)
+    // Figures the visitor never wrote are the model's guesses (a width nobody
+    // asked for), never their choice: lib/shop/said-sizes.ts.
+    const said = args.options ? keepSaidSizes(args.options, ctx.visitorText) : { options: '', setAside: [] as string[] }
+    let options = blankToNull(said.options)
     if (looksLikeLink(reference)) {
       const link = readShopLink(asLink(reference), siteHost())
       if (link.kind === 'category') return { ok: false, message: 'That link is a category page: call search_products with it in link instead.' }
@@ -232,7 +236,9 @@ export const getProductTool = defineTool({
       matchingVariations: detail.matchingVariations?.map((variation) => ({ ...variation, url: addressWithChoice(variation.id, variation.url, ctx.products) })) ?? null,
       chosenOptions: detail.chosenOptions ? { ...detail.chosenOptions, url: addressWithChoice(detail.id, detail.chosenOptions.url, ctx.products) } : null,
     }
-    return { ok: true, product }
+    return said.setAside.length > 0
+      ? { ok: true, product, note: `Set aside sizes they never gave: ${said.setAside.join(', ')}. Never choose a size for them; if it matters, ask.` }
+      : { ok: true, product }
   },
 })
 
