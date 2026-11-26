@@ -12,6 +12,7 @@ import { AUTHOR_ID } from './constants'
 import type { ConversationRow } from './conversation-row'
 import { addressOf, markLinked } from './discussed-products'
 import { repairLinks } from './reply-links'
+import { stripGuessedName } from './reply-names'
 import { saveDiscussedProducts } from './order-state'
 import {
   addUsage,
@@ -267,7 +268,7 @@ async function modelTurn(chat: ResponderChat, settings: AiChatSettings, row: Con
       await fallBack(conversationId, settings, online, !!chat.conversation.visitorEmail)
       return
     }
-    const reply = repairLinks(outcome.text, knownAddresses(ctx))
+    const reply = stripGuessedName(repairLinks(outcome.text, knownAddresses(ctx)), ctx.visitorText, ctx.visitorName)
     await say(conversationId, settings, reply)
     await rememberShown(ctx, reply)
     // The callback has now been offered once; it is not offered again unasked.
